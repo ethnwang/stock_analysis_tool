@@ -18,3 +18,6 @@ env/
 .ruff_cache/
 .plaid_call_count
 tokens/
+.claude/
+Accounts_History.csv
+*:Zone.Identifier
