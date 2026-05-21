@@ -7,7 +7,7 @@ Stock analysis CLI that fetches live market data, scores stocks across technical
 Requires Python 3.10+.
 
 ```bash
-pip install yahooquery pandas numpy ta finnhub-python python-dotenv requests plaid-python schwab-py
+pip3 install yahooquery pandas numpy ta finnhub-python python-dotenv requests plaid-python schwab-py
 ```
 
 Copy `.env.example` to `.env` and fill in your API keys. A Finnhub API key is recommended for news/sentiment scoring but not required — the bot falls back to Yahoo Finance RSS if Finnhub is unavailable.
@@ -19,23 +19,23 @@ Copy `.env.example` to `.env` and fill in your API keys. A Finnhub API key is re
 Score and rank stocks, then output buy recommendations with position sizing.
 
 ```bash
-python main.py analyze                        # Default 48-stock watchlist, top 10
-python main.py analyze --ticker AAPL NVDA     # Specific tickers
-python main.py analyze --universe sp500       # Full S&P 500
-python main.py analyze --universe etf         # ~35 popular ETFs
-python main.py analyze --ticker VOO QQQ SPY   # Specific ETFs (auto-detected)
-python main.py analyze --top 20 --verbose     # Top 20 with detailed reasoning
-python main.py analyze --risk aggressive      # Growth-biased scoring
-python main.py analyze --budget 500           # Custom monthly budget
-python main.py analyze --no-portfolio         # Skip portfolio-aware features
+python3 main.py analyze                        # Default 48-stock watchlist, top 10
+python3 main.py analyze --ticker AAPL NVDA     # Specific tickers
+python3 main.py analyze --universe sp500       # Full S&P 500
+python3 main.py analyze --universe etf         # ~35 popular ETFs
+python3 main.py analyze --ticker VOO QQQ SPY   # Specific ETFs (auto-detected)
+python3 main.py analyze --top 20 --verbose     # Top 20 with detailed reasoning
+python3 main.py analyze --risk aggressive      # Growth-biased scoring
+python3 main.py analyze --budget 500           # Custom monthly budget
+python3 main.py analyze --no-portfolio         # Skip portfolio-aware features
 ```
 
 **Account-specific analysis** — scoped to a single account's holdings with swap suggestions:
 
 ```bash
-python main.py analyze --account roth         # Schwab Roth IRA
-python main.py analyze --account brokerage    # Schwab Brokerage
-python main.py analyze --account hsa          # Fidelity HSA
+python3 main.py analyze --account roth         # Schwab Roth IRA
+python3 main.py analyze --account brokerage    # Schwab Brokerage
+python3 main.py analyze --account hsa          # Fidelity HSA
 ```
 
 | Flag | Description |
@@ -54,9 +54,9 @@ python main.py analyze --account hsa          # Fidelity HSA
 Fetch current positions and balances from linked accounts and write to `portfolio.json`.
 
 ```bash
-python main.py sync                           # Sync all linked accounts
-python main.py sync --schwab-only             # Only sync Schwab
-python main.py sync --plaid-only              # Only sync Plaid
+python3 main.py sync                           # Sync all linked accounts
+python3 main.py sync --schwab-only             # Only sync Schwab
+python3 main.py sync --plaid-only              # Only sync Plaid
 ```
 
 ### `link` — Link a new brokerage account
@@ -64,8 +64,8 @@ python main.py sync --plaid-only              # Only sync Plaid
 Start an OAuth flow to connect a brokerage account.
 
 ```bash
-python main.py link --institution schwab      # Schwab OAuth flow
-python main.py link --institution chase       # Plaid Link for Chase
+python3 main.py link --institution schwab      # Schwab OAuth flow
+python3 main.py link --institution chase       # Plaid Link for Chase
 ```
 
 ### `import` — Import positions from CSV
@@ -73,7 +73,7 @@ python main.py link --institution chase       # Plaid Link for Chase
 Import holdings from a Fidelity portfolio positions CSV export.
 
 ```bash
-python main.py import path/to/Portfolio_Positions.csv
+python3 main.py import path/to/Portfolio_Positions.csv
 ```
 
 ## How It Works
@@ -177,7 +177,7 @@ Weights are auto-normalized if they don't sum to 1.0.
 ## Testing
 
 ```bash
-python -m pytest tests/ -v
+python3 -m pytest tests/ -v
 ```
 
 All tests use hardcoded data fixtures — no API calls required.
