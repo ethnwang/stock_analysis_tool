@@ -62,6 +62,13 @@ _EMPTY_FUNDAMENTALS: dict[str, float] = {
     "current_price": 0.0,
 }
 
+_EMPTY_ETF_FUNDAMENTALS: dict[str, float] = {
+    "expense_ratio": 0.0, "total_assets": 0.0, "top10_concentration": 0.0,
+    "one_year_return": 0.0, "three_year_return": 0.0, "five_year_return": 0.0,
+    "one_year_return_vs_cat": 0.0, "dividend_yield": 0.0,
+    "current_price": 0.0, "market_cap": 0.0, "is_etf": 1.0,
+}
+
 
 def fetch_price_history(tickers: list[str], days: int) -> dict[str, pd.DataFrame]:
     _ensure_yf_env()
@@ -127,6 +134,70 @@ def _extract_ticker_info(
     return TickerInfo(fundamentals, str(name), str(sector))
 
 
+def _extract_etf_info(
+    ticker: str,
+    sd: dict[str, Any],
+    ks: dict[str, Any],
+    fp: dict[str, Any],
+    fperf: dict[str, Any],
+    fhi: dict[str, Any],
+    qt: dict[str, Any],
+    price_data: dict[str, Any],
+) -> TickerInfo:
+    if isinstance(price_data, str):
+        return TickerInfo(_EMPTY_ETF_FUNDAMENTALS.copy(), ticker, "Unknown")
+
+    perf_overview = {}
+    cat_overview = {}
+    if isinstance(fperf, dict):
+        perf_overview = fperf.get("performanceOverview", {}) or {}
+        cat_overview = fperf.get("performanceOverviewCat", {}) or {}
+
+    one_yr = float(perf_overview.get("oneYearTotalReturn", 0) or 0)
+    three_yr = float(perf_overview.get("threeYearTotalReturn", 0) or 0)
+    five_yr = float(perf_overview.get("fiveYearTotalReturn", 0) or 0)
+    cat_one_yr = float(cat_overview.get("oneYearTotalReturn", 0) or 0)
+
+    expense_ratio = 0.0
+    category = "Unknown"
+    if isinstance(fp, dict):
+        fees = fp.get("feesExpensesInvestment", {}) or {}
+        expense_ratio = float(fees.get("annualReportExpenseRatio", 0) or 0)
+        category = str(fp.get("categoryName", "Unknown") or "Unknown")
+
+    top10 = 0.0
+    if isinstance(fhi, dict):
+        holdings_list = fhi.get("holdings", []) or []
+        top10 = sum(
+            float(h.get("holdingPercent", 0) or 0) for h in holdings_list[:10]
+        )
+
+    current_price = float(price_data.get("regularMarketPrice", 0) or 0)
+    total_assets = float(
+        (ks.get("totalAssets", 0) if isinstance(ks, dict) else 0) or
+        (sd.get("totalAssets", 0) if isinstance(sd, dict) else 0) or 0
+    )
+    dividend_yield = float(
+        (sd.get("trailingAnnualDividendYield", 0) if isinstance(sd, dict) else 0) or 0
+    )
+
+    fundamentals: dict[str, float] = {
+        "expense_ratio": expense_ratio,
+        "total_assets": total_assets,
+        "top10_concentration": top10,
+        "one_year_return": one_yr,
+        "three_year_return": three_yr,
+        "five_year_return": five_yr,
+        "one_year_return_vs_cat": one_yr - cat_one_yr if cat_one_yr else 0.0,
+        "dividend_yield": dividend_yield,
+        "current_price": current_price,
+        "market_cap": 0.0,
+        "is_etf": 1.0,
+    }
+    name = qt.get("shortName") or qt.get("longName") or ticker if isinstance(qt, dict) else ticker
+    return TickerInfo(fundamentals, str(name), str(category))
+
+
 def fetch_fundamentals_batch(tickers: list[str]) -> dict[str, TickerInfo]:
     _ensure_yf_env()
     if not tickers:
@@ -141,6 +212,10 @@ def fetch_fundamentals_batch(tickers: list[str]) -> dict[str, TickerInfo]:
         all_fd = t.financial_data
         all_profile = t.asset_profile
         all_qt = t.quote_type
+        all_fp = t.fund_profile
+        all_fperf = t.fund_performance
+        all_fhi = t.fund_holding_info
+        all_price = t.price
     except (ConnectionError, TimeoutError, OSError) as exc:
         logger.error("Fundamentals batch download error: %s", exc)
         return {}
@@ -155,7 +230,16 @@ def fetch_fundamentals_batch(tickers: list[str]) -> dict[str, TickerInfo]:
         fd = all_fd.get(ticker, {}) if isinstance(all_fd, dict) else {}
         profile = all_profile.get(ticker, {}) if isinstance(all_profile, dict) else {}
         qt = all_qt.get(ticker, {}) if isinstance(all_qt, dict) else {}
-        results[ticker] = _extract_ticker_info(ticker, sd, ks, fd, profile, qt)
+
+        quote_type = qt.get("quoteType", "EQUITY") if isinstance(qt, dict) else "EQUITY"
+        if quote_type == "ETF":
+            fp = all_fp.get(ticker, {}) if isinstance(all_fp, dict) else {}
+            fperf = all_fperf.get(ticker, {}) if isinstance(all_fperf, dict) else {}
+            fhi = all_fhi.get(ticker, {}) if isinstance(all_fhi, dict) else {}
+            price = all_price.get(ticker, {}) if isinstance(all_price, dict) else {}
+            results[ticker] = _extract_etf_info(ticker, sd, ks, fp, fperf, fhi, qt, price)
+        else:
+            results[ticker] = _extract_ticker_info(ticker, sd, ks, fd, profile, qt)
 
     return results
 

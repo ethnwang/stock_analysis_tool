@@ -40,6 +40,26 @@ _SP500_FALLBACK: list[str] = [
 ]
 
 
+DEFAULT_ETF_WATCHLIST: list[str] = [
+    # Broad US Market
+    "VOO", "VTI", "SPY", "IVV", "QQQ",
+    # International
+    "VXUS", "VEA", "VWO", "EFA", "IEMG",
+    # Sector
+    "XLK", "XLF", "XLV", "XLE", "XLI", "XLC", "XLRE",
+    # Bonds
+    "BND", "AGG", "TLT", "VCIT", "VCSH",
+    # Dividend / Income
+    "VYM", "SCHD", "DVY",
+    # Growth / Value
+    "VUG", "VTV", "MTUM",
+    # Thematic / Specialty
+    "ARKK", "ICLN", "GLD", "SLV",
+    # Small / Mid Cap
+    "VB", "VO", "IJR",
+]
+
+
 def get_sp500_tickers(finnhub_api_key: str = "") -> list[str]:
     if finnhub_api_key:
         try:
@@ -62,5 +82,8 @@ def get_universe(config: Config) -> list[str]:
 
     if config.universe == "sp500":
         return get_sp500_tickers(config.finnhub_api_key if config.has_finnhub else "")
+
+    if config.universe == "etf":
+        return list(DEFAULT_ETF_WATCHLIST)
 
     return list(DEFAULT_WATCHLIST)

@@ -4,7 +4,7 @@ import pytest
 
 from data.models import ScoredStock
 from scoring.engine import rank_stocks, score_stock
-from tests.conftest import default_config, make_stock
+from tests.conftest import default_config, make_etf, make_stock
 
 
 class TestScoreStock:
@@ -71,3 +71,41 @@ class TestRankStocks:
         result_fund = score_stock(stock, config_fund_heavy)
 
         assert result_tech.composite_score != result_fund.composite_score
+
+
+class TestScoreEtfDispatch:
+    def test_etf_uses_etf_scorer(self) -> None:
+        etf = make_etf()
+        config = default_config()
+        result = score_stock(etf, config)
+
+        assert result.is_etf is True
+        assert any("Expense" in r or "expense" in r for r in result.reasoning)
+
+    def test_stock_uses_stock_scorer(self) -> None:
+        stock = make_stock()
+        config = default_config()
+        result = score_stock(stock, config)
+
+        assert result.is_etf is False
+        assert any("P/E" in r for r in result.reasoning)
+
+    def test_etf_eps_growth_is_zero(self) -> None:
+        etf = make_etf()
+        config = default_config()
+        result = score_stock(etf, config)
+
+        assert result.eps_growth == 0.0
+
+    def test_mixed_ranking(self) -> None:
+        stocks = [
+            make_stock("AAPL", pe=15.0, eps_growth=0.20),
+            make_etf("VOO"),
+        ]
+        config = default_config(top_n=10)
+        ranked = rank_stocks(stocks, config)
+
+        assert len(ranked) == 2
+        tickers = {s.ticker for s in ranked}
+        assert "AAPL" in tickers
+        assert "VOO" in tickers

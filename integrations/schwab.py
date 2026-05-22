@@ -73,15 +73,38 @@ def sync(client_id: str, client_secret: str, refresh_token: str) -> dict[str, An
             account_id = getattr(sec, "account_number", "") or getattr(sec, "accountNumber", "")
             acc_type = getattr(sec, "type", "unknown")
 
-            balances = getattr(sec, "initial_balances", None)
+            current_bal = getattr(sec, "current_balances", None)
+            initial_bal = getattr(sec, "initial_balances", None)
+
             cash = 0.0
-            if balances:
-                cash = getattr(balances, "cash_balance", 0.0) or getattr(balances, "total_cash", 0.0) or 0.0
-            total_account_value = getattr(balances, "liquidation_value", 0.0) or getattr(balances, "account_value", 0.0) or 0.0
+            total_account_value = 0.0
+
+            if current_bal:
+                cash = (
+                    getattr(current_bal, "cash_balance", 0.0)
+                    or getattr(current_bal, "total_cash", 0.0)
+                    or 0.0
+                )
+                total_account_value = (
+                    getattr(current_bal, "liquidation_value", 0.0)
+                    or getattr(current_bal, "equity", 0.0)
+                    or 0.0
+                )
+
+            if not total_account_value and initial_bal:
+                total_account_value = (
+                    getattr(initial_bal, "liquidation_value", 0.0)
+                    or getattr(initial_bal, "account_value", 0.0)
+                    or 0.0
+                )
 
             positions_dict = account.positions
             holdings = _parse_positions(positions_dict)
-            total_value = total_account_value if total_account_value else (sum(h["market_value"] for h in holdings) + cash)
+            holdings_value = sum(h["market_value"] for h in holdings)
+            total_value = total_account_value if total_account_value else (holdings_value + cash)
+
+            if not cash and total_value > holdings_value:
+                cash = round(total_value - holdings_value, 2)
 
             if total_value == 0 and not holdings:
                 logger.info("Account %s: type=%s — empty, skipping", account_id, acc_type)

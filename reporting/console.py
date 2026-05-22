@@ -29,8 +29,11 @@ def print_report(
     has_portfolio = ctx.get("has_portfolio", False)
     has_held = any(s.is_held for s in ranked)
 
+    all_etf = all(s.is_etf for s in ranked)
+    asset_label = "ETF" if all_etf else "Stock"
+
     print("\n" + "=" * 90)
-    print(f"  STOCKBOT ANALYSIS — Top {len(ranked)} Picks")
+    print(f"  STOCKBOT ANALYSIS — Top {len(ranked)} {asset_label} Picks")
     if config.risk_profile != "moderate":
         print(f"  Risk Profile: {config.risk_profile.upper()}")
     print("=" * 90)
@@ -155,6 +158,7 @@ def _print_detailed_analysis(ranked: list[ScoredStock]) -> None:
 def _print_holdings_table(
     holdings: list[ScoredStock],
     unscored: list[dict[str, Any]],
+    emergency_fund_tickers: set[str] | None = None,
 ) -> None:
     header = (
         f"{'#':>3}  {'Ticker':<8} {'Name':<25} {'Price':>9} "
@@ -163,12 +167,19 @@ def _print_holdings_table(
     print(f"\n{header}")
     print("-" * 90)
 
+    ef_tickers = emergency_fund_tickers or set()
     weak_threshold = 50.0
     for i, stock in enumerate(holdings, 1):
         color = _REC_COLORS.get(stock.recommendation, "")
         rec_str = f"{color}{stock.recommendation}{_RESET}"
         name = stock.name[:24] if len(stock.name) > 24 else stock.name
-        weak_flag = "  << weak" if stock.composite_score < weak_threshold else ""
+
+        if stock.ticker in ef_tickers:
+            flag = "  [emergency fund]"
+        elif stock.composite_score < weak_threshold:
+            flag = "  << weak"
+        else:
+            flag = ""
 
         print(
             f"{i:>3}  {stock.ticker:<8} {name:<25} "
@@ -177,7 +188,7 @@ def _print_holdings_table(
             f" {rec_str:<21} "
             f"{stock.technical_score:>4.0f} "
             f"{stock.fundamental_score:>5.0f} "
-            f"{stock.sentiment_score:>5.0f}{weak_flag}"
+            f"{stock.sentiment_score:>5.0f}{flag}"
         )
 
     if unscored:
@@ -217,6 +228,7 @@ def print_account_report(
     config: Config,
     is_maxed: bool = False,
     monthly_budget: float = 0.0,
+    emergency_fund_tickers: set[str] | None = None,
 ) -> None:
     status = "CONTRIBUTIONS MAXED (reallocation only)" if is_maxed else "Open for new contributions"
 
@@ -227,7 +239,7 @@ def print_account_report(
 
     n_positions = len(current_holdings) + len(unscored_holdings)
     print(f"\n  CURRENT HOLDINGS ({n_positions} positions)")
-    _print_holdings_table(current_holdings, unscored_holdings)
+    _print_holdings_table(current_holdings, unscored_holdings, emergency_fund_tickers)
 
     if sector_allocation:
         print(f"\n{'=' * 90}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from analysis.etf_fundamental import score_etf_fundamental
 from analysis.fundamental import score_fundamental_adjusted
 from analysis.sentiment import score_sentiment
 from analysis.technical import compute_indicators, score_technical
@@ -40,9 +41,16 @@ def score_stock(
         tech_score = 50.0
         tech_reasons = ["Insufficient price data for technical analysis"]
 
-    fund_score, fund_reasons = score_fundamental_adjusted(
-        stock.fundamentals, config.risk_profile
-    )
+    is_etf = stock.fundamentals.get("is_etf", 0.0) > 0
+
+    if is_etf:
+        fund_score, fund_reasons = score_etf_fundamental(
+            stock.fundamentals, config.risk_profile
+        )
+    else:
+        fund_score, fund_reasons = score_fundamental_adjusted(
+            stock.fundamentals, config.risk_profile
+        )
     sent_score, sent_reasons = score_sentiment(stock.news)
 
     composite = (
@@ -59,7 +67,7 @@ def score_stock(
     reasoning.append(f"Sentiment: {sent_score:.0f}/100")
     reasoning.extend(f"  {r}" for r in sent_reasons)
 
-    eps_growth = stock.fundamentals.get("eps_growth", 0.0)
+    eps_growth = 0.0 if is_etf else stock.fundamentals.get("eps_growth", 0.0)
     dividend_yield = stock.fundamentals.get("dividend_yield", 0.0)
 
     is_held = False
@@ -111,6 +119,7 @@ def score_stock(
         overlap_penalty=overlap_penalty,
         eps_growth=eps_growth,
         dividend_yield=dividend_yield,
+        is_etf=is_etf,
         suggested_account=account,
         suggested_account_reason=account_reason,
     )

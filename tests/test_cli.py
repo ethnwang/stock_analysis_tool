@@ -89,3 +89,8 @@ class TestBuildParser:
         parser = build_parser()
         args = parser.parse_args(["analyze"])
         assert args.account is None
+
+    def test_analyze_universe_etf(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["analyze", "--universe", "etf"])
+        assert args.universe == "etf"

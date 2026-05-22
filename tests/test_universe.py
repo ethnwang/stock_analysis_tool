@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from data.universe import _SP500_FALLBACK, get_sp500_tickers
+from data.universe import DEFAULT_ETF_WATCHLIST, _SP500_FALLBACK, get_sp500_tickers, get_universe
+from tests.conftest import default_config
 
 
 def _mock_finnhub_module(mock_client: MagicMock) -> MagicMock:
@@ -44,3 +45,17 @@ class TestGetSp500Tickers:
             result = get_sp500_tickers("real_key")
 
         assert result == list(_SP500_FALLBACK)
+
+
+class TestGetUniverseEtf:
+    def test_etf_universe_returns_etf_list(self) -> None:
+        config = default_config(universe="etf")
+        tickers = get_universe(config)
+        assert "VOO" in tickers
+        assert "SPY" in tickers
+        assert len(tickers) == len(DEFAULT_ETF_WATCHLIST)
+
+    def test_etf_universe_all_uppercase(self) -> None:
+        config = default_config(universe="etf")
+        tickers = get_universe(config)
+        assert all(t == t.upper() for t in tickers)

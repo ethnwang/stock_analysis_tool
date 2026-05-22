@@ -54,3 +54,4 @@ class ScoredStock:
 
     eps_growth: float = 0.0
     dividend_yield: float = 0.0
+    is_etf: bool = False

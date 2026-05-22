@@ -156,6 +156,12 @@ def is_roth_maxed(portfolio: dict[str, Any]) -> bool:
     return bool(portfolio.get("roth_ira_maxed", False))
 
 
+def get_emergency_fund_tickers(portfolio: dict[str, Any] | None) -> set[str]:
+    if not portfolio:
+        return set()
+    return set(portfolio.get("emergency_fund", []))
+
+
 def get_monthly_budget(portfolio: dict[str, Any]) -> float:
     expenses = portfolio.get("monthly_expenses", {})
     return float(expenses.get("personal_investment", 0.0))
@@ -211,11 +217,15 @@ MIN_SWAP_DELTA = 10.0
 def generate_swaps(
     weak_holdings: list[ScoredStock],
     alternatives: list[ScoredStock],
+    emergency_fund_tickers: set[str] | None = None,
 ) -> list[SwapSuggestion]:
     from data.models import SwapSuggestion as _SwapSuggestion
 
+    ef_tickers = emergency_fund_tickers or set()
     swaps: list[_SwapSuggestion] = []
     for weak in weak_holdings:
+        if weak.ticker in ef_tickers:
+            continue
         if weak.composite_score >= WEAK_THRESHOLD:
             continue
 

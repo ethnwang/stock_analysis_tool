@@ -19,6 +19,7 @@ from portfolio.loader import (
     generate_swaps,
     get_account_holdings,
     get_all_holdings,
+    get_emergency_fund_tickers,
     get_held_tickers_detailed,
     get_held_tickers_for_account,
     get_monthly_budget,
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = sub.add_parser("analyze", help="Run stock analysis")
     analyze.add_argument(
         "--universe",
-        choices=["sp500", "watchlist"],
+        choices=["sp500", "watchlist", "etf"],
         default=None,
         help="Stock universe to analyze (default: watchlist)",
     )
@@ -119,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_sync(config: object, schwab_only: bool = False, plaid_only: bool = False) -> None:
+def _run_sync(config: Config, schwab_only: bool = False, plaid_only: bool = False) -> None:
     print("\nStockBot — Portfolio Sync", file=sys.stderr)
     print(f"{'─' * 40}", file=sys.stderr)
 
@@ -138,7 +139,7 @@ def _run_sync(config: object, schwab_only: bool = False, plaid_only: bool = Fals
         logger.info("Last sync: %s", portfolio["last_sync"])
 
 
-def _run_link_schwab(config: object) -> None:
+def _run_link_schwab(config: Config) -> None:
     if not config.schwab_client_id or not config.schwab_client_secret:
         print("Error: SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET must be set in .env", file=sys.stderr)
         sys.exit(1)
@@ -185,7 +186,7 @@ def _run_link_schwab(config: object) -> None:
     print(f"Refresh token saved to .env as SCHWAB_REFRESH_TOKEN", file=sys.stderr)
 
 
-def _run_link_plaid(config: object, institution: str) -> None:
+def _run_link_plaid(config: Config, institution: str) -> None:
     if not config.has_plaid:
         print("Error: PLAID_CLIENT_ID and PLAID_SECRET must be set in .env", file=sys.stderr)
         sys.exit(1)
@@ -261,7 +262,9 @@ def _run_account_analysis(args: argparse.Namespace, config: Config, portfolio: d
             logger.debug("No live price for %s — using portfolio.json value", h["ticker"])
 
     sector_map = {s.ticker: s.sector for s in stocks if s.sector}
-    acct_sector_allocation = get_sector_allocation(account_holdings, sector_map)
+    ef_tickers = get_emergency_fund_tickers(portfolio)
+    non_ef_holdings = [h for h in account_holdings if h["ticker"] not in ef_tickers]
+    acct_sector_allocation = get_sector_allocation(non_ef_holdings, sector_map)
 
     held_tickers = get_held_tickers_for_account(portfolio, account_key)
 
@@ -284,7 +287,7 @@ def _run_account_analysis(args: argparse.Namespace, config: Config, portfolio: d
         and h["ticker"]
     ]
 
-    swaps = generate_swaps(current_holdings, alternatives)
+    swaps = generate_swaps(current_holdings, alternatives, emergency_fund_tickers=ef_tickers)
 
     monthly_budget = 0.0
     if not is_maxed:
@@ -306,6 +309,7 @@ def _run_account_analysis(args: argparse.Namespace, config: Config, portfolio: d
         config=config,
         is_maxed=is_maxed,
         monthly_budget=monthly_budget,
+        emergency_fund_tickers=ef_tickers,
     )
 
 
