@@ -369,6 +369,18 @@ Swap thresholds are in `portfolio/loader.py` (`WEAK_THRESHOLD = 50.0`, `MIN_SWAP
 - Fidelity is not available via Plaid — must use CSV import
 - 401(k) accounts are not selectable for `--account` analysis (employer-managed, limited reallocation options)
 
+## Automation
+
+`scripts/auto_routine.py` runs daily via user crontab (12:15, `flock`-guarded) and executes whatever is due per `logs/routine_state.json` — a catch-up design, since WSL cron only fires while the machine is on:
+
+| Task | Cadence | Command |
+|------|---------|---------|
+| Schwab sync | every 6 days | `sync --schwab-only` (also keeps the OAuth refresh token alive — it expires after ~7 days of inactivity) |
+| Score snapshot | every 6 days | `analyze --universe watchlist --no-portfolio --snapshot` (raw model scores, no portfolio penalties) |
+| Snapshot evaluation | every 28 days | `backtest --eval-snapshots` |
+
+Results are appended to the Obsidian vault note `Notes/Projects/StockBot/StockBot Automation Log.md` (✅/❌ status lines; full report for evaluations). Failures don't update state, so they retry the next day. **Plaid is never called** (limited API quota); Fidelity remains manual CSV import. Disable by removing the `stockbot-routine` line from `crontab -e`.
+
 ## Backtesting & Snapshots
 
 ```bash

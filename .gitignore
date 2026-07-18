@@ -23,3 +23,4 @@ Accounts_History.csv
 *:Zone.Identifier
 snapshots/
 data/cache/
+logs/
