@@ -96,19 +96,20 @@ def _score_pe(pe: float, aggressive: bool, reasons: list[str]) -> float:
 
 
 def _score_eps_growth(eps_growth: float, reasons: list[str]) -> float:
+    # Single-quarter YoY figure (Yahoo earningsQuarterlyGrowth) — noisy by nature
     if eps_growth > 0.25:
-        reasons.append(f"EPS growth {eps_growth:+.0%} — strong")
+        reasons.append(f"EPS growth (qtr YoY) {eps_growth:+.0%} — strong")
         return 100.0
     if eps_growth > 0.10:
-        reasons.append(f"EPS growth {eps_growth:+.0%} — solid")
+        reasons.append(f"EPS growth (qtr YoY) {eps_growth:+.0%} — solid")
         return 75.0
     if eps_growth > 0:
-        reasons.append(f"EPS growth {eps_growth:+.0%} — positive")
+        reasons.append(f"EPS growth (qtr YoY) {eps_growth:+.0%} — positive")
         return 50.0
     if eps_growth > -0.10:
-        reasons.append(f"EPS growth {eps_growth:+.0%} — slight decline")
+        reasons.append(f"EPS growth (qtr YoY) {eps_growth:+.0%} — slight decline")
         return 25.0
-    reasons.append(f"EPS growth {eps_growth:+.0%} — declining")
+    reasons.append(f"EPS growth (qtr YoY) {eps_growth:+.0%} — declining")
     return 0.0
 
 

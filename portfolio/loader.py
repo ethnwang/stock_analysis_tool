@@ -188,6 +188,11 @@ def suggest_account(
     return "Brokerage", "Default to brokerage for flexibility"
 
 
+# Sizing weights use points above the Hold threshold, not raw scores:
+# raw-linear compresses a 66 vs 90 into ~1.4x; conviction should matter more.
+_SIZING_BASELINE = 45.0
+
+
 def compute_position_sizes(
     ranked: list[ScoredStock],
     monthly_budget: float,
@@ -196,13 +201,16 @@ def compute_position_sizes(
     if not buyable or monthly_budget <= 0:
         return
 
-    total_score = sum(s.composite_score for s in buyable)
-    if total_score <= 0:
+    weights = {
+        s.ticker: max(s.composite_score - _SIZING_BASELINE, 1.0) for s in buyable
+    }
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
         return
 
     for stock in buyable:
         stock.suggested_amount = round(
-            monthly_budget * (stock.composite_score / total_score), 2
+            monthly_budget * (weights[stock.ticker] / total_weight), 2
         )
         if stock.current_price > 0:
             stock.suggested_shares = round(

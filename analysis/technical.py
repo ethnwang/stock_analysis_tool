@@ -40,8 +40,9 @@ def compute_indicators(df: pd.DataFrame) -> dict[str, float | str | None]:
     macd_signal = _nan_to_none(macd_ind.macd_signal().iloc[-1])
     macd_hist_series = macd_ind.macd_diff()
     macd_hist = _nan_to_none(macd_hist_series.iloc[-1])
+    # 3-bar slope: a single histogram tick is noise, not momentum direction
     macd_hist_prev = (
-        _nan_to_none(macd_hist_series.iloc[-2]) if len(macd_hist_series) > 1 else None
+        _nan_to_none(macd_hist_series.iloc[-3]) if len(macd_hist_series) >= 4 else None
     )
 
     bb = BollingerBands(close=close, window=20, window_dev=2)
