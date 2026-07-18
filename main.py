@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from config import load_config
@@ -103,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep stocks with insufficient data in the ranking (marked '!')",
     )
+    analyze.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="Append all scores to snapshots/scores.jsonl for later validation",
+    )
 
     sync_cmd = sub.add_parser("sync", help="Pull latest balances/holdings from linked accounts")
     sync_cmd.add_argument("--schwab-only", action="store_true", help="Only sync Schwab, skip Plaid")
@@ -120,6 +126,46 @@ def build_parser() -> argparse.ArgumentParser:
     import_cmd.add_argument(
         "file",
         help="Path to Fidelity Portfolio_Positions CSV file",
+    )
+
+    backtest_cmd = sub.add_parser(
+        "backtest",
+        help="Validate technical scores against historical forward returns",
+    )
+    backtest_cmd.add_argument(
+        "--ticker",
+        nargs="+",
+        default=None,
+        help="Tickers to backtest (default: watchlist universe)",
+    )
+    backtest_cmd.add_argument(
+        "--universe",
+        choices=["sp500", "watchlist", "etf"],
+        default=None,
+        help="Universe to backtest when --ticker is not given",
+    )
+    backtest_cmd.add_argument(
+        "--years",
+        type=int,
+        choices=[2, 3],
+        default=3,
+        help="Years of price history (default: 3)",
+    )
+    backtest_cmd.add_argument(
+        "--step",
+        type=int,
+        default=5,
+        help="Bars between as-of scoring dates (default: 5)",
+    )
+    backtest_cmd.add_argument(
+        "--eval-snapshots",
+        action="store_true",
+        help="Evaluate accumulated analyze --snapshot history instead",
+    )
+    backtest_cmd.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Verbose logging",
     )
 
     return parser
@@ -318,6 +364,49 @@ def _run_account_analysis(args: argparse.Namespace, config: Config, portfolio: d
     )
 
 
+def _run_backtest(args: argparse.Namespace) -> None:
+    from backtest.engine import evaluate_snapshots, run_technical_backtest
+    from reporting.console import print_backtest_report
+
+    print("\nStockBot — Backtest", file=sys.stderr)
+    print(f"{'─' * 40}", file=sys.stderr)
+
+    if args.eval_snapshots:
+        result = evaluate_snapshots()
+    else:
+        if args.ticker:
+            tickers = [t.upper() for t in args.ticker]
+        else:
+            config = load_config(universe=args.universe)
+            tickers = get_universe(config)
+        result = run_technical_backtest(
+            tickers, days=args.years * 365, step=args.step,
+        )
+    print_backtest_report(result)
+
+
+def _snapshot_scores(ranked: list, config: Config) -> None:
+    from backtest.snapshots import SnapshotRecord, append_snapshots
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    records = [
+        SnapshotRecord(
+            date=today,
+            ticker=s.ticker,
+            composite=s.composite_score,
+            technical=s.technical_score,
+            fundamental=s.fundamental_score,
+            sentiment=s.sentiment_score,
+            completeness=s.data_completeness,
+            price=s.current_price,
+            universe=config.universe,
+            risk_profile=config.risk_profile,
+        )
+        for s in ranked
+    ]
+    append_snapshots(records)
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -353,6 +442,10 @@ def main() -> None:
         print("\nStockBot — Fidelity CSV Import", file=sys.stderr)
         print(f"{'─' * 40}", file=sys.stderr)
         import_to_portfolio(args.file, "portfolio.json")
+        return
+
+    if args.command == "backtest":
+        _run_backtest(args)
         return
 
     config = load_config(
@@ -443,6 +536,18 @@ def main() -> None:
             "sector_allocation": sector_allocation or {},
             "monthly_budget": monthly_budget,
         }
+
+    if args.snapshot:
+        # snapshot the full scored universe, not just top-N — rank correlation
+        # against forward returns needs the whole cross-section
+        all_scored = rank_stocks(
+            stocks, config,
+            held_tickers=held_tickers,
+            sector_allocation=sector_allocation,
+            roth_ira_maxed=roth_maxed,
+            return_all=True,
+        )
+        _snapshot_scores(all_scored, config)
 
     print_report(ranked, config, portfolio_context=portfolio_context)
 

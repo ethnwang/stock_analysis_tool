@@ -21,3 +21,4 @@ tokens/
 .claude/
 Accounts_History.csv
 *:Zone.Identifier
+snapshots/

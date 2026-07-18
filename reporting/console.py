@@ -311,3 +311,42 @@ def print_account_report(
     print("  Disclaimer: This is not financial advice. Past performance does")
     print("  not guarantee future results. Always do your own research.")
     print(f"{'=' * 90}\n")
+
+
+def print_backtest_report(result: Any) -> None:
+    print("\n" + "=" * 90)
+    print("  BACKTEST REPORT")
+    print("=" * 90)
+
+    if result.n_observations == 0:
+        print("\n  No observations produced.")
+        for caveat in result.caveats:
+            print(f"  ! {caveat}")
+        print()
+        return
+
+    print(f"\n  Tickers: {len(result.tickers)}  |  "
+          f"Observations: {result.n_observations}  |  "
+          f"Cross-sectional dates: {result.n_dates}")
+
+    print(f"\n  {'Horizon':<12} {'Mean Spearman (score vs fwd return)':>38}")
+    print("  " + "-" * 52)
+    for horizon, corr in result.spearman_by_horizon.items():
+        label = f"{horizon} bars" if horizon else "since snapshot"
+        corr_str = f"{corr:+.3f}" if corr == corr else "n/a"
+        print(f"  {label:<12} {corr_str:>38}")
+
+    for horizon, means in result.bucket_means.items():
+        label = f"{horizon}-bar" if horizon else "since-snapshot"
+        print(f"\n  Mean forward return by score quintile ({label}):")
+        print(f"  {'Quintile':<12} {'(low score)':<14}{'':<14}{'':<14}{'':<14}{'(high score)'}")
+        cells = []
+        for m in means:
+            cells.append(f"{m:+.2%}" if m == m else "n/a")
+        print("  " + "  ".join(f"{c:>10}" for c in cells))
+
+    if result.caveats:
+        print()
+        for caveat in result.caveats:
+            print(f"  ! {caveat}")
+    print()

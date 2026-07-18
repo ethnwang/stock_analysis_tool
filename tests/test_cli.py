@@ -104,3 +104,24 @@ class TestIncludeIncompleteFlag:
     def test_include_incomplete_parses(self) -> None:
         args = build_parser().parse_args(["analyze", "--include-incomplete"])
         assert args.include_incomplete is True
+
+
+class TestBacktestCommand:
+    def test_backtest_defaults(self) -> None:
+        args = build_parser().parse_args(["backtest"])
+        assert args.command == "backtest"
+        assert args.years == 3
+        assert args.step == 5
+        assert args.eval_snapshots is False
+
+    def test_backtest_with_tickers(self) -> None:
+        args = build_parser().parse_args(["backtest", "--ticker", "aapl", "msft"])
+        assert args.ticker == ["aapl", "msft"]
+
+    def test_backtest_eval_snapshots(self) -> None:
+        args = build_parser().parse_args(["backtest", "--eval-snapshots"])
+        assert args.eval_snapshots is True
+
+    def test_snapshot_flag_on_analyze(self) -> None:
+        args = build_parser().parse_args(["analyze", "--snapshot"])
+        assert args.snapshot is True
