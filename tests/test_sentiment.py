@@ -118,3 +118,80 @@ class TestScoreSentiment:
         neg_recent = [{**pos, "datetime": old_ts}, {**neg, "datetime": recent_ts}]
 
         assert score_sentiment(pos_recent).score > score_sentiment(neg_recent).score
+
+
+class TestShrinkage:
+    def test_single_positive_signal_shrinks_toward_neutral(self) -> None:
+        news = [{"headline": "Outlook bullish", "summary": ""}]
+        result = score_sentiment(news)
+        # one lone signal must not max out the score anymore
+        assert 50.0 < result.score < 65.0
+
+    def test_many_signals_can_still_score_high(self) -> None:
+        news = [
+            {"headline": "beats estimates strong growth surge rally profit momentum", "summary": ""}
+            for _ in range(4)
+        ]
+        result = score_sentiment(news)
+        assert result.score > 75.0
+
+    def test_zero_signals_still_exactly_neutral(self) -> None:
+        news = [{"headline": "Company held quarterly meeting today", "summary": ""}]
+        result = score_sentiment(news)
+        assert result.score == 50.0
+
+    def test_completeness_scales_with_article_count(self) -> None:
+        one = score_sentiment([{"headline": "bullish outlook", "summary": ""}])
+        five = score_sentiment(
+            [{"headline": f"bullish outlook day {i}", "summary": ""} for i in range(5)]
+        )
+        assert one.completeness < five.completeness
+        assert five.completeness == 1.0
+
+
+class TestNoisyKeywordsRemoved:
+    def test_bare_revenue_is_neutral(self) -> None:
+        news = [{"headline": "Company reports quarterly revenue", "summary": ""}]
+        assert score_sentiment(news).score == 50.0
+
+    def test_bare_debt_is_neutral(self) -> None:
+        news = [{"headline": "Company issues new debt", "summary": ""}]
+        assert score_sentiment(news).score == 50.0
+
+    def test_revenue_beat_phrase_is_positive(self) -> None:
+        news = [{"headline": "Q3 revenue beat sends shares higher", "summary": ""}]
+        assert score_sentiment(news).score > 50.0
+
+    def test_rising_debt_phrase_is_negative(self) -> None:
+        news = [{"headline": "Concerns over rising debt weigh on outlook", "summary": ""}]
+        assert score_sentiment(news).score < 50.0
+
+
+class TestNegation:
+    def test_negated_positive_counts_negative(self) -> None:
+        news = [{"headline": "Quarter was not strong for the company", "summary": ""}]
+        assert score_sentiment(news).score < 50.0
+
+    def test_fails_to_beat_counts_negative(self) -> None:
+        news = [{"headline": "Company fails to beat expectations", "summary": ""}]
+        assert score_sentiment(news).score < 50.0
+
+    def test_unnegated_positive_still_positive(self) -> None:
+        news = [{"headline": "Quarter was strong for the company", "summary": ""}]
+        assert score_sentiment(news).score > 50.0
+
+
+class TestDedup:
+    def test_duplicate_headlines_counted_once(self) -> None:
+        article = {"headline": "Company beats estimates with strong growth", "summary": ""}
+        single = score_sentiment([article])
+        duplicated = score_sentiment([article, dict(article), dict(article)])
+        assert duplicated.score == single.score
+
+    def test_distinct_headlines_kept(self) -> None:
+        news = [
+            {"headline": "Company beats estimates with strong growth", "summary": ""},
+            {"headline": "Regulators open fraud investigation into supplier", "summary": ""},
+        ]
+        result = score_sentiment(news)
+        assert "2 unique articles" in result.reasons[0]
