@@ -379,7 +379,15 @@ Swap thresholds are in `portfolio/loader.py` (`WEAK_THRESHOLD = 50.0`, `MIN_SWAP
 | Score snapshot | every 6 days | `analyze --universe watchlist --no-portfolio --snapshot` (raw model scores, no portfolio penalties) |
 | Snapshot evaluation | every 28 days | `backtest --eval-snapshots` |
 
-Results are appended to the Obsidian vault note `Notes/Projects/StockBot/StockBot Automation Log.md` (✅/❌ status lines; full report for evaluations). Failures don't update state, so they retry the next day. **Plaid is never called** (limited API quota); Fidelity remains manual CSV import. Disable by removing the `stockbot-routine` line from `crontab -e`.
+Results are appended to the Obsidian vault note `Notes/Projects/StockBot/StockBot Automation Log.md` (✅/❌ status lines; full report for evaluations). Failures don't update state, so they retry the next day. **Plaid is never called** (limited API quota); Fidelity remains manual CSV import.
+
+Three redundant triggers share the same flock lock + state file (extra fires are no-ops):
+
+1. WSL cron daily at 12:15 (only fires while WSL is running)
+2. WSL cron `@reboot` (+90s) — fires whenever WSL starts
+3. **Windows Task Scheduler task "StockBot Routine"** — daily 12:30 + at logon, with missed-run catch-up (`StartWhenAvailable`). Boots WSL headlessly via `wsl.exe`, so the routine runs even if WSL is never opened. Re-register with `scripts/windows_task_setup.ps1` (run from PowerShell). This is the primary trigger on a machine where WSL is rarely opened.
+
+Disable: remove the two `stockbot` lines from `crontab -e` and delete the "StockBot Routine" task in Windows Task Scheduler (`Unregister-ScheduledTask -TaskName 'StockBot Routine'`).
 
 ## Backtesting & Snapshots
 
