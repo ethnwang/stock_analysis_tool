@@ -24,3 +24,5 @@ Accounts_History.csv
 snapshots/
 data/cache/
 logs/
+Accounts_History*.csv
+Fidelity_Portfolio.csv
