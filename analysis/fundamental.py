@@ -24,6 +24,57 @@ _RISK_WEIGHTS: dict[str, dict[str, float]] = {
 }
 
 
+def _score_pe_relative(pe: float, sector_median: float, reasons: list[str]) -> float:
+    ratio = pe / sector_median
+    if ratio <= 0.6:
+        label, score = "well below sector norm", 100.0
+    elif ratio <= 0.85:
+        label, score = "below sector norm", 80.0
+    elif ratio <= 1.15:
+        label, score = "near sector norm", 55.0
+    elif ratio <= 1.5:
+        label, score = "above sector norm", 30.0
+    else:
+        label, score = "far above sector norm", 10.0
+    reasons.append(f"P/E {pe:.1f} vs sector median {sector_median:.1f} — {label}")
+    return score
+
+
+def _score_de_relative(de: float, sector_median: float, reasons: list[str]) -> float:
+    ratio = de / sector_median if sector_median > 0 else float("inf")
+    if ratio <= 0.5:
+        label, score = "well below sector norm", 100.0
+    elif ratio <= 0.8:
+        label, score = "below sector norm", 80.0
+    elif ratio <= 1.25:
+        label, score = "near sector norm", 55.0
+    elif ratio <= 2.0:
+        label, score = "above sector norm", 30.0
+    else:
+        label, score = "far above sector norm", 10.0
+    reasons.append(f"D/E {de:.2f} vs sector median {sector_median:.2f} — {label}")
+    return score
+
+
+# Growth stays on absolute bands (a sector where everyone shrinks shouldn't
+# score shrinkage well), but gets a clamped nudge vs the sector median.
+_GROWTH_SECTOR_ADJUSTMENT = 10.0
+
+
+def _sector_growth_adjustment(
+    value: float, sector_median: float | None, label: str, reasons: list[str],
+) -> float:
+    if sector_median is None:
+        return 0.0
+    if value > sector_median:
+        reasons.append(f"{label} above sector median ({sector_median:+.0%})")
+        return _GROWTH_SECTOR_ADJUSTMENT
+    if value < sector_median:
+        reasons.append(f"{label} below sector median ({sector_median:+.0%})")
+        return -_GROWTH_SECTOR_ADJUSTMENT
+    return 0.0
+
+
 def _score_pe(pe: float, aggressive: bool, reasons: list[str]) -> float:
     if pe <= 0:
         reasons.append(f"P/E {pe:.1f} — negative earnings")
@@ -132,26 +183,43 @@ def score_fundamental_adjusted(
     # dividend_yield: absence means "pays no dividend" — always scored
     div_yield = fundamentals.get("dividend_yield") or 0.0
 
+    pe_median = sector_stats.get(sector, "pe_ratio") if sector_stats else None
+    de_median = sector_stats.get(sector, "debt_to_equity") if sector_stats else None
+    eps_median = sector_stats.get(sector, "eps_growth") if sector_stats else None
+    rev_median = sector_stats.get(sector, "revenue_growth") if sector_stats else None
+
     if pe is not None:
-        weighted_sum += _score_pe(pe, aggressive, reasons) * w["pe"]
+        if pe > 0 and pe_median is not None:
+            pe_score = _score_pe_relative(pe, pe_median, reasons)
+        else:
+            pe_score = _score_pe(pe, aggressive, reasons)
+        weighted_sum += pe_score * w["pe"]
         available_weight += w["pe"]
     else:
         reasons.append("P/E unavailable — not scored")
 
     if eps_growth is not None:
-        weighted_sum += _score_eps_growth(eps_growth, reasons) * w["eps"]
+        eps_score = _score_eps_growth(eps_growth, reasons)
+        eps_score += _sector_growth_adjustment(eps_growth, eps_median, "EPS growth", reasons)
+        weighted_sum += min(max(eps_score, 0.0), 100.0) * w["eps"]
         available_weight += w["eps"]
     else:
         reasons.append("EPS growth unavailable — not scored")
 
     if rev_growth is not None:
-        weighted_sum += _score_rev_growth(rev_growth, reasons) * w["rev"]
+        rev_score = _score_rev_growth(rev_growth, reasons)
+        rev_score += _sector_growth_adjustment(rev_growth, rev_median, "Revenue growth", reasons)
+        weighted_sum += min(max(rev_score, 0.0), 100.0) * w["rev"]
         available_weight += w["rev"]
     else:
         reasons.append("Revenue growth unavailable — not scored")
 
     if de_ratio is not None:
-        weighted_sum += _score_de(de_ratio, reasons) * w["de"]
+        if de_ratio > 0 and de_median is not None:
+            de_score = _score_de_relative(de_ratio, de_median, reasons)
+        else:
+            de_score = _score_de(de_ratio, reasons)
+        weighted_sum += de_score * w["de"]
         available_weight += w["de"]
     else:
         reasons.append("D/E unavailable — not scored")

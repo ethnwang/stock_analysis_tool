@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from analysis.etf_fundamental import score_etf_fundamental
 from analysis.fundamental import score_fundamental_adjusted
+from analysis.relative import SectorStats, build_sector_stats
 from analysis.sentiment import score_sentiment
 from analysis.technical import compute_indicators, score_technical
 from data.models import ScoredStock, ScoreResult
@@ -56,6 +57,7 @@ def score_stock(
     config: Config,
     held_tickers: dict[str, list[dict[str, Any]]] | None = None,
     roth_ira_maxed: bool = False,
+    sector_stats: SectorStats | None = None,
 ) -> ScoredStock | None:
     tech = _score_technical_safe(stock)
 
@@ -64,7 +66,10 @@ def score_stock(
     if is_etf:
         fund = score_etf_fundamental(stock.fundamentals, config.risk_profile)
     else:
-        fund = score_fundamental_adjusted(stock.fundamentals, config.risk_profile)
+        fund = score_fundamental_adjusted(
+            stock.fundamentals, config.risk_profile,
+            sector_stats=sector_stats, sector=stock.sector,
+        )
     sent = score_sentiment(stock.news)
 
     # Pillars with zero completeness carry no information — drop them and
@@ -189,11 +194,14 @@ def rank_stocks(
     return_all: bool = False,
     include_incomplete: bool = False,
 ) -> list[ScoredStock]:
+    sector_stats = build_sector_stats(stocks)
+
     scored: list[ScoredStock] = []
     for stock in stocks:
         result = score_stock(
             stock, config, held_tickers=held_tickers,
             roth_ira_maxed=roth_ira_maxed,
+            sector_stats=sector_stats,
         )
         if result is not None:
             scored.append(result)
