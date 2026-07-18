@@ -6,6 +6,13 @@ from typing import NamedTuple
 import pandas as pd
 
 
+@dataclass(frozen=True)
+class ScoreResult:
+    score: float
+    reasons: list[str]
+    completeness: float = 1.0  # weight-fraction of inputs that were actually present (0..1)
+
+
 class SwapSuggestion(NamedTuple):
     sell_ticker: str
     sell_name: str
@@ -22,7 +29,7 @@ class StockData:
     name: str
     sector: str
     price_history: pd.DataFrame
-    fundamentals: dict[str, float]
+    fundamentals: dict[str, float | None]
     news: list[dict[str, str]]
     quote: dict[str, float]
 
@@ -55,3 +62,6 @@ class ScoredStock:
     eps_growth: float = 0.0
     dividend_yield: float = 0.0
     is_etf: bool = False
+
+    data_completeness: float = 1.0
+    insufficient_data: bool = False

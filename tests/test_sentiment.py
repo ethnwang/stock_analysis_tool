@@ -64,47 +64,48 @@ class TestRecencyWeight:
 
 class TestScoreSentiment:
     def test_no_news_returns_neutral(self) -> None:
-        score, reasons = score_sentiment([])
-        assert score == 50.0
-        assert any("neutral" in r.lower() for r in reasons)
+        result = score_sentiment([])
+        assert result.score == 50.0
+        assert result.completeness == 0.0
+        assert any("neutral" in r.lower() for r in result.reasons)
 
     def test_positive_news_scores_above_50(self) -> None:
         news = [
             {"headline": "Company beats estimates with record revenue and strong growth", "summary": ""},
             {"headline": "Analyst upgrade to buy with raised guidance", "summary": ""},
         ]
-        score, _ = score_sentiment(news)
-        assert score > 50.0
+        result = score_sentiment(news)
+        assert result.score > 50.0
 
     def test_negative_news_scores_below_50(self) -> None:
         news = [
             {"headline": "Stock crashes after fraud investigation and layoffs", "summary": ""},
             {"headline": "Earnings miss leads to downgrade and sell warning", "summary": ""},
         ]
-        score, _ = score_sentiment(news)
-        assert score < 50.0
+        result = score_sentiment(news)
+        assert result.score < 50.0
 
     def test_neutral_news_returns_50(self) -> None:
         news = [
             {"headline": "Company held quarterly meeting today", "summary": ""},
             {"headline": "New office location announced", "summary": ""},
         ]
-        score, _ = score_sentiment(news)
-        assert score == 50.0
+        result = score_sentiment(news)
+        assert result.score == 50.0
 
     def test_score_in_range(self) -> None:
         news = [
             {"headline": "beat growth surge rally profit buy", "summary": ""},
         ]
-        score, _ = score_sentiment(news)
-        assert 0 <= score <= 100
+        result = score_sentiment(news)
+        assert 0 <= result.score <= 100
 
     def test_notable_headlines_in_reasons(self) -> None:
         news = [
             {"headline": "Company beats estimates with record profit margins", "summary": ""},
         ]
-        _, reasons = score_sentiment(news)
-        assert any("+" in r for r in reasons)
+        result = score_sentiment(news)
+        assert any("+" in r for r in result.reasons)
 
     def test_recency_affects_score(self) -> None:
         recent_ts = str(int(time.time()) - 3600)
@@ -116,6 +117,4 @@ class TestScoreSentiment:
         pos_recent = [{**pos, "datetime": recent_ts}, {**neg, "datetime": old_ts}]
         neg_recent = [{**pos, "datetime": old_ts}, {**neg, "datetime": recent_ts}]
 
-        score_pos_recent, _ = score_sentiment(pos_recent)
-        score_neg_recent, _ = score_sentiment(neg_recent)
-        assert score_pos_recent > score_neg_recent
+        assert score_sentiment(pos_recent).score > score_sentiment(neg_recent).score

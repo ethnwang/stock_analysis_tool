@@ -40,10 +40,10 @@ def print_report(
 
     header = (
         f"{'#':>3}  {'Ticker':<8} {'Name':<25} {'Price':>9} "
-        f"{'Score':>6} {'Rec':<12} {'Tech':>5} {'Fund':>5} {'Sent':>5}"
+        f"{'Score':>6} {'Rec':<12} {'Tech':>5} {'Fund':>5} {'Sent':>5} {'Data':>5}"
     )
     print(f"\n{header}")
-    print("-" * 90)
+    print("-" * 96)
 
     for i, stock in enumerate(ranked, 1):
         color = _REC_COLORS.get(stock.recommendation, "")
@@ -51,7 +51,8 @@ def print_report(
 
         name = stock.name[:24] if len(stock.name) > 24 else stock.name
         held_marker = "*" if stock.is_held else ""
-        ticker_display = f"{stock.ticker}{held_marker}"
+        incomplete_marker = "!" if stock.insufficient_data else ""
+        ticker_display = f"{stock.ticker}{held_marker}{incomplete_marker}"
 
         print(
             f"{i:>3}  {ticker_display:<8} {name:<25} "
@@ -60,10 +61,11 @@ def print_report(
             f" {rec_str:<21} "
             f"{stock.technical_score:>4.0f} "
             f"{stock.fundamental_score:>5.0f} "
-            f"{stock.sentiment_score:>5.0f}"
+            f"{stock.sentiment_score:>5.0f} "
+            f"{stock.data_completeness:>4.0%}"
         )
 
-    print("-" * 90)
+    print("-" * 96)
     print(
         f"  Weights: Technical {config.weight_technical:.0%} | "
         f"Fundamental {config.weight_fundamental:.0%} | "
@@ -71,6 +73,8 @@ def print_report(
     )
     if has_held:
         print("  * = already held in portfolio")
+    if any(s.insufficient_data for s in ranked):
+        print("  ! = insufficient data — score unreliable")
 
     if has_portfolio:
         _print_sector_allocation(ctx.get("sector_allocation", {}))

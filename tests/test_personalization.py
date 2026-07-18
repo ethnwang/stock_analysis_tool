@@ -133,9 +133,9 @@ class TestRiskAdjustedScoring:
             "debt_to_equity": 0.5,
             "dividend_yield": 0.0,
         }
-        aggressive_score, _ = score_fundamental_adjusted(growth_fundamentals, "aggressive")
-        conservative_score, _ = score_fundamental_adjusted(growth_fundamentals, "conservative")
-        assert aggressive_score > conservative_score
+        aggressive = score_fundamental_adjusted(growth_fundamentals, "aggressive")
+        conservative = score_fundamental_adjusted(growth_fundamentals, "conservative")
+        assert aggressive.score > conservative.score
 
     def test_conservative_favors_value_stocks(self) -> None:
         value_fundamentals = {
@@ -145,9 +145,9 @@ class TestRiskAdjustedScoring:
             "debt_to_equity": 0.3,
             "dividend_yield": 0.04,
         }
-        conservative_score, _ = score_fundamental_adjusted(value_fundamentals, "conservative")
-        aggressive_score, _ = score_fundamental_adjusted(value_fundamentals, "aggressive")
-        assert conservative_score > aggressive_score
+        conservative = score_fundamental_adjusted(value_fundamentals, "conservative")
+        aggressive = score_fundamental_adjusted(value_fundamentals, "aggressive")
+        assert conservative.score > aggressive.score
 
     def test_moderate_matches_default_scoring(self) -> None:
         fundamentals = {
@@ -157,9 +157,7 @@ class TestRiskAdjustedScoring:
             "debt_to_equity": 0.5,
             "dividend_yield": 0.02,
         }
-        moderate_score, _ = score_fundamental_adjusted(fundamentals, "moderate")
-        default_score, _ = score_fundamental(fundamentals)
-        assert moderate_score == default_score
+        assert score_fundamental_adjusted(fundamentals, "moderate").score == score_fundamental(fundamentals).score
 
     def test_default_risk_profile_is_moderate(self) -> None:
         config = default_config()

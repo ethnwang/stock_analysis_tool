@@ -94,3 +94,13 @@ class TestBuildParser:
         parser = build_parser()
         args = parser.parse_args(["analyze", "--universe", "etf"])
         assert args.universe == "etf"
+
+
+class TestIncludeIncompleteFlag:
+    def test_include_incomplete_defaults_false(self) -> None:
+        args = build_parser().parse_args(["analyze"])
+        assert args.include_incomplete is False
+
+    def test_include_incomplete_parses(self) -> None:
+        args = build_parser().parse_args(["analyze", "--include-incomplete"])
+        assert args.include_incomplete is True

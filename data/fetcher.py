@@ -51,23 +51,35 @@ class RateLimiter:
 
 
 class TickerInfo(NamedTuple):
-    fundamentals: dict[str, float]
+    fundamentals: dict[str, float | None]
     name: str
     sector: str
 
 
-_EMPTY_FUNDAMENTALS: dict[str, float] = {
-    "pe_ratio": 0.0, "eps_growth": 0.0, "revenue_growth": 0.0,
-    "debt_to_equity": 0.0, "dividend_yield": 0.0, "market_cap": 0.0,
-    "current_price": 0.0,
+# None = data unavailable (scorers skip the metric); 0.0 = a genuine zero.
+# dividend_yield is the deliberate exception: Yahoo omits it for non-payers,
+# so absence means "pays no dividend" and defaults to 0.0.
+_EMPTY_FUNDAMENTALS: dict[str, float | None] = {
+    "pe_ratio": None, "eps_growth": None, "revenue_growth": None,
+    "debt_to_equity": None, "dividend_yield": 0.0, "market_cap": None,
+    "current_price": None,
 }
 
-_EMPTY_ETF_FUNDAMENTALS: dict[str, float] = {
-    "expense_ratio": 0.0, "total_assets": 0.0, "top10_concentration": 0.0,
-    "one_year_return": 0.0, "three_year_return": 0.0, "five_year_return": 0.0,
-    "one_year_return_vs_cat": 0.0, "dividend_yield": 0.0,
-    "current_price": 0.0, "market_cap": 0.0, "is_etf": 1.0,
+_EMPTY_ETF_FUNDAMENTALS: dict[str, float | None] = {
+    "expense_ratio": None, "total_assets": None, "top10_concentration": None,
+    "one_year_return": None, "three_year_return": None, "five_year_return": None,
+    "one_year_return_vs_cat": None, "dividend_yield": 0.0,
+    "current_price": None, "market_cap": None, "is_etf": 1.0,
 }
+
+
+def _opt_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_price_history(tickers: list[str], days: int) -> dict[str, pd.DataFrame]:
@@ -120,14 +132,15 @@ def _extract_ticker_info(
     if isinstance(sd, str) or isinstance(ks, str) or isinstance(fd, str):
         return TickerInfo(_EMPTY_FUNDAMENTALS.copy(), ticker, "Unknown")
 
-    fundamentals = {
-        "pe_ratio": sd.get("trailingPE") or sd.get("forwardPE") or 0.0,
-        "eps_growth": ks.get("earningsQuarterlyGrowth", 0.0) or 0.0,
-        "revenue_growth": fd.get("revenueGrowth", 0.0) or 0.0,
-        "debt_to_equity": (fd.get("debtToEquity", 0.0) or 0.0) / 100.0,
-        "dividend_yield": sd.get("dividendYield", 0.0) or 0.0,
-        "market_cap": float(sd.get("marketCap", 0) or 0),
-        "current_price": float(fd.get("currentPrice") or sd.get("regularMarketPrice") or 0),
+    de_raw = _opt_float(fd.get("debtToEquity"))
+    fundamentals: dict[str, float | None] = {
+        "pe_ratio": _opt_float(sd.get("trailingPE")) or _opt_float(sd.get("forwardPE")),
+        "eps_growth": _opt_float(ks.get("earningsQuarterlyGrowth")),
+        "revenue_growth": _opt_float(fd.get("revenueGrowth")),
+        "debt_to_equity": None if de_raw is None else de_raw / 100.0,
+        "dividend_yield": _opt_float(sd.get("dividendYield")) or 0.0,
+        "market_cap": _opt_float(sd.get("marketCap")),
+        "current_price": _opt_float(fd.get("currentPrice")) or _opt_float(sd.get("regularMarketPrice")),
     }
     name = qt.get("shortName") or qt.get("longName") or ticker
     sector = profile.get("sector", "Unknown")
@@ -153,45 +166,48 @@ def _extract_etf_info(
         perf_overview = fperf.get("performanceOverview", {}) or {}
         cat_overview = fperf.get("performanceOverviewCat", {}) or {}
 
-    one_yr = float(perf_overview.get("oneYearTotalReturn", 0) or 0)
-    three_yr = float(perf_overview.get("threeYearTotalReturn", 0) or 0)
-    five_yr = float(perf_overview.get("fiveYearTotalReturn", 0) or 0)
-    cat_one_yr = float(cat_overview.get("oneYearTotalReturn", 0) or 0)
+    one_yr = _opt_float(perf_overview.get("oneYearTotalReturn"))
+    three_yr = _opt_float(perf_overview.get("threeYearTotalReturn"))
+    five_yr = _opt_float(perf_overview.get("fiveYearTotalReturn"))
+    cat_one_yr = _opt_float(cat_overview.get("oneYearTotalReturn"))
 
-    expense_ratio = 0.0
+    expense_ratio: float | None = None
     category = "Unknown"
     if isinstance(fp, dict):
         fees = fp.get("feesExpensesInvestment", {}) or {}
-        expense_ratio = float(fees.get("annualReportExpenseRatio", 0) or 0)
+        expense_ratio = _opt_float(fees.get("annualReportExpenseRatio"))
         category = str(fp.get("categoryName", "Unknown") or "Unknown")
 
-    top10 = 0.0
+    top10: float | None = None
     if isinstance(fhi, dict):
         holdings_list = fhi.get("holdings", []) or []
-        top10 = sum(
-            float(h.get("holdingPercent", 0) or 0) for h in holdings_list[:10]
-        )
+        if holdings_list:
+            top10 = sum(
+                float(h.get("holdingPercent", 0) or 0) for h in holdings_list[:10]
+            )
 
-    current_price = float(price_data.get("regularMarketPrice", 0) or 0)
-    total_assets = float(
-        (ks.get("totalAssets", 0) if isinstance(ks, dict) else 0) or
-        (sd.get("totalAssets", 0) if isinstance(sd, dict) else 0) or 0
+    current_price = _opt_float(price_data.get("regularMarketPrice"))
+    total_assets = (
+        (_opt_float(ks.get("totalAssets")) if isinstance(ks, dict) else None) or
+        (_opt_float(sd.get("totalAssets")) if isinstance(sd, dict) else None)
     )
-    dividend_yield = float(
-        (sd.get("trailingAnnualDividendYield", 0) if isinstance(sd, dict) else 0) or 0
-    )
+    dividend_yield = (
+        _opt_float(sd.get("trailingAnnualDividendYield")) if isinstance(sd, dict) else None
+    ) or 0.0
 
-    fundamentals: dict[str, float] = {
+    fundamentals: dict[str, float | None] = {
         "expense_ratio": expense_ratio,
         "total_assets": total_assets,
         "top10_concentration": top10,
         "one_year_return": one_yr,
         "three_year_return": three_yr,
         "five_year_return": five_yr,
-        "one_year_return_vs_cat": one_yr - cat_one_yr if cat_one_yr else 0.0,
+        "one_year_return_vs_cat": (
+            one_yr - cat_one_yr if one_yr is not None and cat_one_yr is not None else None
+        ),
         "dividend_yield": dividend_yield,
         "current_price": current_price,
-        "market_cap": 0.0,
+        "market_cap": None,
         "is_etf": 1.0,
     }
     name = qt.get("shortName") or qt.get("longName") or ticker if isinstance(qt, dict) else ticker
@@ -333,11 +349,20 @@ def fetch_all(tickers: list[str], config: Config) -> list[StockData]:
     filtered: list[tuple[str, TickerInfo]] = []
     for ticker in valid_tickers:
         info = all_fund.get(ticker, TickerInfo(_EMPTY_FUNDAMENTALS.copy(), ticker, "Unknown"))
-        if info.fundamentals["current_price"] < config.min_price:
-            logger.debug("Filtered %s: price $%.2f < min $%.2f", ticker, info.fundamentals["current_price"], config.min_price)
+        price = info.fundamentals["current_price"]
+        if price is None:
+            # Quote fetch failed; use last close so the price filter still applies.
+            price = float(price_data[ticker]["Close"].iloc[-1])
+            info.fundamentals["current_price"] = price
+        if price < config.min_price:
+            logger.debug("Filtered %s: price $%.2f < min $%.2f", ticker, price, config.min_price)
             continue
         mc = info.fundamentals["market_cap"]
-        if mc > 0 and mc < config.min_market_cap:
+        is_etf = (info.fundamentals.get("is_etf") or 0.0) > 0
+        if mc is None:
+            if not is_etf:
+                logger.info("Market cap unknown for %s — min-market-cap filter not applied", ticker)
+        elif mc < config.min_market_cap:
             logger.debug("Filtered %s: market cap $%.0f < min $%.0f", ticker, mc, config.min_market_cap)
             continue
         filtered.append((ticker, info))
@@ -371,7 +396,7 @@ def fetch_all(tickers: list[str], config: Config) -> list[StockData]:
             price_history=price_data[ticker],
             fundamentals=info.fundamentals,
             news=news,
-            quote={"price": info.fundamentals.get("current_price", 0.0)},
+            quote={"price": info.fundamentals.get("current_price") or 0.0},
         ))
 
     logger.info("Fetched complete data for %d stocks", len(results))

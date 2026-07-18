@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from data.models import ScoreResult
+
 _POSITIVE_KEYWORDS = {
     "beat", "beats", "exceeded", "upgrade", "upgrades", "upgraded",
     "growth", "record", "strong", "bullish", "outperform", "outperforms",
@@ -89,9 +91,11 @@ def _recency_weight(article_datetime: str) -> float:
     return 0.5
 
 
-def score_sentiment(news: list[dict[str, str]]) -> tuple[float, list[str]]:
+def score_sentiment(news: list[dict[str, str]]) -> ScoreResult:
     if not news:
-        return 50.0, ["No news data available — sentiment neutral"]
+        return ScoreResult(
+            50.0, ["No news data available — sentiment neutral"], completeness=0.0,
+        )
 
     total_pos = 0.0
     total_neg = 0.0
@@ -113,9 +117,14 @@ def score_sentiment(news: list[dict[str, str]]) -> tuple[float, list[str]]:
         elif neg > pos and neg >= 2:
             notable.append(f"  - {headline[:80]}")
 
+    completeness = min(1.0, len(news) / 5)
+
     total = total_pos + total_neg
     if total == 0:
-        return 50.0, [f"Analyzed {len(news)} articles — no strong signals"]
+        return ScoreResult(
+            50.0, [f"Analyzed {len(news)} articles — no strong signals"],
+            completeness=completeness,
+        )
 
     ratio = total_pos / total
     score = ratio * 100.0
@@ -126,4 +135,4 @@ def score_sentiment(news: list[dict[str, str]]) -> tuple[float, list[str]]:
     ]
     reasons.extend(notable[:5])
 
-    return min(max(score, 0.0), 100.0), reasons
+    return ScoreResult(min(max(score, 0.0), 100.0), reasons, completeness=completeness)

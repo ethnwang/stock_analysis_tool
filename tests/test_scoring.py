@@ -109,3 +109,77 @@ class TestScoreEtfDispatch:
         tickers = {s.ticker for s in ranked}
         assert "AAPL" in tickers
         assert "VOO" in tickers
+
+
+class TestDataCompleteness:
+    def test_full_data_has_high_completeness(self) -> None:
+        stock = make_stock()
+        config = default_config()
+        result = score_stock(stock, config)
+
+        assert result.data_completeness >= 0.85
+        assert not result.insufficient_data
+
+    def test_empty_fundamentals_lowers_completeness(self) -> None:
+        stock = make_stock()
+        stock.fundamentals = {
+            "pe_ratio": None, "eps_growth": None, "revenue_growth": None,
+            "debt_to_equity": None, "dividend_yield": 0.0,
+        }
+        config = default_config()
+        result = score_stock(stock, config)
+
+        assert result.data_completeness < score_stock(make_stock(), config).data_completeness
+
+    def test_insufficient_data_flagged_and_labeled(self) -> None:
+        stock = make_stock()
+        stock.fundamentals = {
+            "pe_ratio": None, "eps_growth": None, "revenue_growth": None,
+            "debt_to_equity": None, "dividend_yield": 0.0,
+        }
+        stock.price_history = stock.price_history.iloc[:10]  # kills technical too
+        config = default_config()
+        result = score_stock(stock, config)
+
+        assert result.insufficient_data
+        assert result.recommendation == "Insufficient Data"
+
+    def test_insufficient_stocks_excluded_from_ranking(self) -> None:
+        good = make_stock("GOOD")
+        bad = make_stock("BAD")
+        bad.fundamentals = {
+            "pe_ratio": None, "eps_growth": None, "revenue_growth": None,
+            "debt_to_equity": None, "dividend_yield": 0.0,
+        }
+        bad.price_history = bad.price_history.iloc[:10]
+        config = default_config(top_n=5)
+
+        ranked = rank_stocks([good, bad], config)
+        assert [s.ticker for s in ranked] == ["GOOD"]
+
+        included = rank_stocks([good, bad], config, include_incomplete=True)
+        assert {s.ticker for s in included} == {"GOOD", "BAD"}
+
+    def test_return_all_keeps_insufficient_stocks(self) -> None:
+        bad = make_stock("BAD")
+        bad.fundamentals = {
+            "pe_ratio": None, "eps_growth": None, "revenue_growth": None,
+            "debt_to_equity": None, "dividend_yield": 0.0,
+        }
+        bad.price_history = bad.price_history.iloc[:10]
+        config = default_config()
+
+        ranked = rank_stocks([bad], config, return_all=True)
+        assert len(ranked) == 1
+        assert ranked[0].insufficient_data
+
+    def test_technical_pillar_dropped_renormalizes_composite(self) -> None:
+        stock = make_stock()
+        stock.price_history = stock.price_history.iloc[:10]
+        config = default_config()
+        result = score_stock(stock, config)
+
+        # with no price history AND no news, both those pillars are dropped —
+        # composite must equal the fundamental score alone, not include
+        # fake neutral-50 pillars
+        assert result.composite_score == pytest.approx(result.fundamental_score, abs=0.1)

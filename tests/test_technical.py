@@ -76,26 +76,23 @@ class TestScoreTechnical:
         up_indicators = compute_indicators(up_df)
         down_indicators = compute_indicators(down_df)
 
-        up_score, _ = score_technical(up_indicators)
-        down_score, _ = score_technical(down_indicators)
-
-        assert up_score > down_score
+        assert score_technical(up_indicators).score > score_technical(down_indicators).score
 
     def test_score_in_range(self) -> None:
         df = _make_ohlcv(_uptrend())
         indicators = compute_indicators(df)
-        score, reasons = score_technical(indicators)
+        result = score_technical(indicators)
 
-        assert 0 <= score <= 100
-        assert isinstance(reasons, list)
+        assert 0 <= result.score <= 100
+        assert isinstance(result.reasons, list)
 
     def test_returns_reasoning(self) -> None:
         df = _make_ohlcv(_uptrend())
         indicators = compute_indicators(df)
-        _, reasons = score_technical(indicators)
+        result = score_technical(indicators)
 
-        assert len(reasons) > 0
-        assert all(isinstance(r, str) for r in reasons)
+        assert len(result.reasons) > 0
+        assert all(isinstance(r, str) for r in result.reasons)
 
     def test_oversold_rsi_scores_high(self) -> None:
         indicators = {
@@ -105,9 +102,9 @@ class TestScoreTechnical:
             "volume_ratio": 1.3, "current_price": 150.0,
             "macd_hist": 0.5, "bb_upper": 160.0, "bb_lower": 140.0,
         }
-        score, reasons = score_technical(indicators)
-        assert score >= 70
-        assert any("oversold" in r.lower() for r in reasons)
+        result = score_technical(indicators)
+        assert result.score >= 70
+        assert any("oversold" in r.lower() for r in result.reasons)
 
     def test_overbought_rsi_scores_low(self) -> None:
         indicators = {
@@ -117,5 +114,5 @@ class TestScoreTechnical:
             "volume_ratio": 0.4, "current_price": 150.0,
             "macd_hist": -0.5, "bb_upper": 160.0, "bb_lower": 140.0,
         }
-        score, reasons = score_technical(indicators)
-        assert score <= 30
+        result = score_technical(indicators)
+        assert result.score <= 30

@@ -98,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Analyze a specific account (shows holdings, swaps, reallocation)",
     )
+    analyze.add_argument(
+        "--include-incomplete",
+        action="store_true",
+        help="Keep stocks with insufficient data in the ranking (marked '!')",
+    )
 
     sync_cmd = sub.add_parser("sync", help="Pull latest balances/holdings from linked accounts")
     sync_cmd.add_argument("--schwab-only", action="store_true", help="Only sync Schwab, skip Plaid")
@@ -423,6 +428,7 @@ def main() -> None:
         held_tickers=held_tickers,
         sector_allocation=sector_allocation,
         roth_ira_maxed=roth_maxed,
+        include_incomplete=args.include_incomplete,
     )
 
     if monthly_budget > 0:

@@ -24,6 +24,7 @@ class Config:
     weight_sentiment: float = 0.10
     min_price: float = 5.0
     min_market_cap: float = 300_000_000
+    min_data_completeness: float = 0.5
     risk_profile: str = "moderate"
     verbose: bool = False
     custom_tickers: list[str] = field(default_factory=list)
@@ -82,6 +83,7 @@ def load_config(
         weight_sentiment=weights[2],
         min_price=float(os.environ.get("MIN_PRICE", "5.0")),
         min_market_cap=float(os.environ.get("MIN_MARKET_CAP", "300000000")),
+        min_data_completeness=float(os.environ.get("MIN_DATA_COMPLETENESS", "0.5")),
         risk_profile=risk_profile or os.environ.get("RISK_PROFILE", "moderate"),
         verbose=verbose,
         custom_tickers=tickers or [],

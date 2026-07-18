@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from data.models import ScoreResult
+
+# Below this fraction of available metric weight, the score would rest on too
+# little data — return neutral instead of pretending confidence.
+_MIN_AVAILABLE_WEIGHT = 0.4
 
 _ETF_RISK_WEIGHTS: dict[str, dict[str, float]] = {
     "aggressive": {
@@ -39,10 +44,15 @@ def _score_expense_ratio(ratio: float) -> tuple[float, str]:
 
 
 def _score_blended_returns(
-    one_yr: float, three_yr: float, five_yr: float,
+    one_yr: float | None, three_yr: float | None, five_yr: float | None,
     blend: tuple[float, float, float],
-) -> tuple[float, str]:
-    blended = blend[0] * one_yr + blend[1] * three_yr + blend[2] * five_yr
+) -> tuple[float, str] | None:
+    # Blend over whichever horizons are present, renormalizing their weights.
+    parts = [(r, b) for r, b in zip((one_yr, three_yr, five_yr), blend) if r is not None]
+    if not parts:
+        return None
+    blend_total = sum(b for _, b in parts)
+    blended = sum(r * b for r, b in parts) / blend_total
     pct = blended * 100
 
     if blended > 0.20:
@@ -111,53 +121,74 @@ def _score_yield(dividend_yield: float) -> tuple[float, str]:
 
 
 def score_etf_fundamental(
-    fundamentals: dict[str, float],
+    fundamentals: dict[str, float | None],
     risk_profile: str = "moderate",
-) -> tuple[float, list[str]]:
+) -> ScoreResult:
     weights = _ETF_RISK_WEIGHTS.get(risk_profile, _ETF_RISK_WEIGHTS["moderate"])
     blend = _RETURNS_BLEND.get(risk_profile, _RETURNS_BLEND["moderate"])
     reasons: list[str] = []
+    weighted_sum = 0.0
+    available_weight = 0.0
 
-    expense_score, expense_reason = _score_expense_ratio(
-        fundamentals.get("expense_ratio", 0.0),
-    )
-    reasons.append(expense_reason)
+    expense = fundamentals.get("expense_ratio")
+    if expense is not None:
+        score, reason = _score_expense_ratio(expense)
+        weighted_sum += score * weights["expense"]
+        available_weight += weights["expense"]
+        reasons.append(reason)
+    else:
+        reasons.append("Expense ratio unavailable — not scored")
 
-    returns_score, returns_reason = _score_blended_returns(
-        fundamentals.get("one_year_return", 0.0),
-        fundamentals.get("three_year_return", 0.0),
-        fundamentals.get("five_year_return", 0.0),
+    returns_result = _score_blended_returns(
+        fundamentals.get("one_year_return"),
+        fundamentals.get("three_year_return"),
+        fundamentals.get("five_year_return"),
         blend,
     )
-    reasons.append(returns_reason)
+    if returns_result is not None:
+        score, reason = returns_result
+        weighted_sum += score * weights["returns"]
+        available_weight += weights["returns"]
+        reasons.append(reason)
+    else:
+        reasons.append("Return history unavailable — not scored")
 
-    vs_cat_score, vs_cat_reason = _score_vs_category(
-        fundamentals.get("one_year_return_vs_cat", 0.0),
-    )
-    reasons.append(vs_cat_reason)
+    vs_cat = fundamentals.get("one_year_return_vs_cat")
+    if vs_cat is not None:
+        score, reason = _score_vs_category(vs_cat)
+        weighted_sum += score * weights["vs_category"]
+        available_weight += weights["vs_category"]
+        reasons.append(reason)
+    else:
+        reasons.append("Category comparison unavailable — not scored")
 
-    conc_score, conc_reason = _score_concentration(
-        fundamentals.get("top10_concentration", 0.0),
-    )
-    reasons.append(conc_reason)
+    top10 = fundamentals.get("top10_concentration")
+    if top10 is not None:
+        score, reason = _score_concentration(top10)
+        weighted_sum += score * weights["concentration"]
+        available_weight += weights["concentration"]
+        reasons.append(reason)
+    else:
+        reasons.append("Holdings data unavailable — not scored")
 
-    aum_score, aum_reason = _score_aum(
-        fundamentals.get("total_assets", 0.0),
-    )
-    reasons.append(aum_reason)
+    total_assets = fundamentals.get("total_assets")
+    if total_assets is not None:
+        score, reason = _score_aum(total_assets)
+        weighted_sum += score * weights["aum"]
+        available_weight += weights["aum"]
+        reasons.append(reason)
+    else:
+        reasons.append("AUM unavailable — not scored")
 
-    yield_score, yield_reason = _score_yield(
-        fundamentals.get("dividend_yield", 0.0),
-    )
-    reasons.append(yield_reason)
+    # dividend_yield: absence means "no distributions" — always scored
+    score, reason = _score_yield(fundamentals.get("dividend_yield") or 0.0)
+    weighted_sum += score * weights["yield"]
+    available_weight += weights["yield"]
+    reasons.append(reason)
 
-    total = (
-        weights["expense"] * expense_score
-        + weights["returns"] * returns_score
-        + weights["vs_category"] * vs_cat_score
-        + weights["concentration"] * conc_score
-        + weights["aum"] * aum_score
-        + weights["yield"] * yield_score
-    )
+    if available_weight < _MIN_AVAILABLE_WEIGHT:
+        reasons.append("Too few ETF metrics available — score is neutral")
+        return ScoreResult(50.0, reasons, completeness=available_weight)
 
-    return min(max(total, 0.0), 100.0), reasons
+    total = weighted_sum / available_weight
+    return ScoreResult(min(max(total, 0.0), 100.0), reasons, completeness=available_weight)

@@ -6,6 +6,8 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, ADXIndicator, SMAIndicator
 from ta.volatility import BollingerBands
 
+from data.models import ScoreResult
+
 _WEIGHTS = {
     "rsi": 0.20,
     "macd": 0.25,
@@ -15,175 +17,246 @@ _WEIGHTS = {
     "volume": 0.15,
 }
 
+# Below this fraction of available indicator weight, a technical score would
+# rest on too little signal — return neutral instead of pretending confidence.
+_MIN_AVAILABLE_WEIGHT = 0.4
 
-def compute_indicators(df: pd.DataFrame) -> dict[str, float | str]:
+
+def _nan_to_none(value: float) -> float | None:
+    return None if np.isnan(value) else float(value)
+
+
+def compute_indicators(df: pd.DataFrame) -> dict[str, float | str | None]:
     close = df["Close"].squeeze() if isinstance(df["Close"], pd.DataFrame) else df["Close"]
     high = df["High"].squeeze() if isinstance(df["High"], pd.DataFrame) else df["High"]
     low = df["Low"].squeeze() if isinstance(df["Low"], pd.DataFrame) else df["Low"]
     volume = df["Volume"].squeeze() if isinstance(df["Volume"], pd.DataFrame) else df["Volume"]
 
     rsi_ind = RSIIndicator(close=close, window=14)
-    rsi = rsi_ind.rsi().iloc[-1]
+    rsi = _nan_to_none(rsi_ind.rsi().iloc[-1])
 
     macd_ind = MACD(close=close, window_slow=26, window_fast=12, window_sign=9)
-    macd_line = macd_ind.macd().iloc[-1]
-    macd_signal = macd_ind.macd_signal().iloc[-1]
-    macd_hist = macd_ind.macd_diff().iloc[-1]
-    macd_hist_prev = macd_ind.macd_diff().iloc[-2] if len(macd_ind.macd_diff()) > 1 else 0.0
+    macd_line = _nan_to_none(macd_ind.macd().iloc[-1])
+    macd_signal = _nan_to_none(macd_ind.macd_signal().iloc[-1])
+    macd_hist_series = macd_ind.macd_diff()
+    macd_hist = _nan_to_none(macd_hist_series.iloc[-1])
+    macd_hist_prev = (
+        _nan_to_none(macd_hist_series.iloc[-2]) if len(macd_hist_series) > 1 else None
+    )
 
     bb = BollingerBands(close=close, window=20, window_dev=2)
-    bb_upper = bb.bollinger_hband().iloc[-1]
-    bb_lower = bb.bollinger_lband().iloc[-1]
-    bb_pct = bb.bollinger_pband().iloc[-1]
+    bb_upper = _nan_to_none(bb.bollinger_hband().iloc[-1])
+    bb_lower = _nan_to_none(bb.bollinger_lband().iloc[-1])
+    bb_pct = _nan_to_none(bb.bollinger_pband().iloc[-1])
 
-    sma50 = SMAIndicator(close=close, window=50).sma_indicator().iloc[-1]
-    sma200 = SMAIndicator(close=close, window=200).sma_indicator().iloc[-1]
+    sma50 = _nan_to_none(SMAIndicator(close=close, window=50).sma_indicator().iloc[-1])
+    sma200 = _nan_to_none(SMAIndicator(close=close, window=200).sma_indicator().iloc[-1])
     current_price = float(close.iloc[-1])
 
     adx_ind = ADXIndicator(high=high, low=low, close=close, window=14)
-    adx = adx_ind.adx().iloc[-1]
+    adx = _nan_to_none(adx_ind.adx().iloc[-1])
+    if adx == 0.0:
+        # ta's ADX emits 0.0 during its warm-up window instead of NaN
+        adx = None
 
     vol_recent = float(volume.iloc[-5:].mean())
     vol_avg = float(volume.iloc[-20:].mean())
-    volume_ratio = vol_recent / vol_avg if vol_avg > 0 else 1.0
+    volume_ratio = vol_recent / vol_avg if vol_avg > 0 else None
 
-    macd_direction = "bullish" if macd_hist > macd_hist_prev else "bearish"
+    macd_direction: str | None = None
+    if macd_hist is not None and macd_hist_prev is not None:
+        macd_direction = "bullish" if macd_hist > macd_hist_prev else "bearish"
 
     return {
-        "rsi": float(rsi) if not np.isnan(rsi) else 50.0,
-        "macd_line": float(macd_line) if not np.isnan(macd_line) else 0.0,
-        "macd_signal": float(macd_signal) if not np.isnan(macd_signal) else 0.0,
-        "macd_hist": float(macd_hist) if not np.isnan(macd_hist) else 0.0,
+        "rsi": rsi,
+        "macd_line": macd_line,
+        "macd_signal": macd_signal,
+        "macd_hist": macd_hist,
         "macd_direction": macd_direction,
-        "bb_pct": float(bb_pct) if not np.isnan(bb_pct) else 0.5,
-        "bb_upper": float(bb_upper) if not np.isnan(bb_upper) else 0.0,
-        "bb_lower": float(bb_lower) if not np.isnan(bb_lower) else 0.0,
-        "sma50": float(sma50) if not np.isnan(sma50) else 0.0,
-        "sma200": float(sma200) if not np.isnan(sma200) else 0.0,
-        "adx": float(adx) if not np.isnan(adx) else 0.0,
+        "bb_pct": bb_pct,
+        "bb_upper": bb_upper,
+        "bb_lower": bb_lower,
+        "sma50": sma50,
+        "sma200": sma200,
+        "adx": adx,
         "volume_ratio": volume_ratio,
         "current_price": current_price,
     }
 
 
-def _is_bullish_trend(macd_line: float, macd_signal: float, sma50: float, sma200: float) -> bool:
-    bullish_signals = 0
-    if macd_line > macd_signal:
-        bullish_signals += 1
-    if sma50 > 0 and sma200 > 0 and sma50 > sma200:
-        bullish_signals += 1
-    return bullish_signals >= 1
+def _is_bullish_trend(
+    macd_line: float | None,
+    macd_signal: float | None,
+    sma50: float | None,
+    sma200: float | None,
+) -> bool | None:
+    signals: list[bool] = []
+    if macd_line is not None and macd_signal is not None:
+        signals.append(macd_line > macd_signal)
+    if sma50 is not None and sma200 is not None and sma50 > 0 and sma200 > 0:
+        signals.append(sma50 > sma200)
+    if not signals:
+        return None
+    return any(signals)
 
 
-def score_technical(indicators: dict[str, float | str]) -> tuple[float, list[str]]:
-    score = 0.0
-    reasons: list[str] = []
-    rsi = float(indicators["rsi"])
-    macd_line = float(indicators["macd_line"])
-    macd_signal = float(indicators["macd_signal"])
-    macd_dir = str(indicators["macd_direction"])
-    bb_pct = float(indicators["bb_pct"])
-    sma50 = float(indicators["sma50"])
-    sma200 = float(indicators["sma200"])
-    adx = float(indicators["adx"])
-    vol_ratio = float(indicators["volume_ratio"])
-
-    bullish = _is_bullish_trend(macd_line, macd_signal, sma50, sma200)
-
+def _score_rsi(rsi: float, reasons: list[str]) -> float:
     if rsi < 30:
-        rsi_score = 100.0
         reasons.append(f"RSI {rsi:.0f} — oversold (bullish)")
-    elif rsi < 40:
-        rsi_score = 75.0
+        return 100.0
+    if rsi < 40:
         reasons.append(f"RSI {rsi:.0f} — approaching oversold")
-    elif rsi < 60:
-        rsi_score = 50.0
-    elif rsi < 70:
-        rsi_score = 25.0
+        return 75.0
+    if rsi < 60:
+        return 50.0
+    if rsi < 70:
         reasons.append(f"RSI {rsi:.0f} — approaching overbought")
-    else:
-        rsi_score = 0.0
-        reasons.append(f"RSI {rsi:.0f} — overbought (bearish)")
-    score += rsi_score * _WEIGHTS["rsi"]
+        return 25.0
+    reasons.append(f"RSI {rsi:.0f} — overbought (bearish)")
+    return 0.0
 
+
+def _score_macd(
+    macd_line: float, macd_signal: float, macd_dir: str | None, reasons: list[str],
+) -> float:
     if macd_line > macd_signal and macd_dir == "bullish":
-        macd_score = 100.0
         reasons.append("MACD bullish crossover with rising momentum")
-    elif macd_line > macd_signal:
-        macd_score = 70.0
+        return 100.0
+    if macd_line > macd_signal:
         reasons.append("MACD above signal line")
-    elif macd_line < macd_signal and macd_dir == "bearish":
-        macd_score = 0.0
+        return 70.0
+    if macd_line < macd_signal and macd_dir == "bearish":
         reasons.append("MACD bearish crossover with falling momentum")
-    elif macd_line < macd_signal:
-        macd_score = 30.0
+        return 0.0
+    if macd_line < macd_signal:
         reasons.append("MACD below signal line")
-    else:
-        macd_score = 50.0
-    score += macd_score * _WEIGHTS["macd"]
+        return 30.0
+    return 50.0
 
+
+def _score_bb(bb_pct: float, reasons: list[str]) -> float:
     if bb_pct < 0.0:
-        bb_score = 100.0
         reasons.append("Price below lower Bollinger Band (potential buy)")
-    elif bb_pct < 0.2:
-        bb_score = 80.0
+        return 100.0
+    if bb_pct < 0.2:
         reasons.append("Price near lower Bollinger Band")
-    elif bb_pct < 0.8:
-        bb_score = 50.0
-    elif bb_pct < 1.0:
-        bb_score = 20.0
+        return 80.0
+    if bb_pct < 0.8:
+        return 50.0
+    if bb_pct < 1.0:
         reasons.append("Price near upper Bollinger Band")
-    else:
-        bb_score = 0.0
-        reasons.append("Price above upper Bollinger Band (overbought)")
-    score += bb_score * _WEIGHTS["bb"]
+        return 20.0
+    reasons.append("Price above upper Bollinger Band (overbought)")
+    return 0.0
 
-    if sma50 > 0 and sma200 > 0:
-        sma_ratio = sma50 / sma200
-        if sma_ratio > 1.02:
-            sma_score = 100.0
-            reasons.append("Golden cross — SMA 50 above SMA 200 (bullish)")
-        elif sma_ratio > 1.0:
-            sma_score = 70.0
-            reasons.append("SMA 50 slightly above SMA 200")
-        elif sma_ratio > 0.98:
-            sma_score = 40.0
-            reasons.append("SMA 50 near SMA 200 (neutral)")
-        else:
-            sma_score = 0.0
-            reasons.append("Death cross — SMA 50 below SMA 200 (bearish)")
-    else:
-        sma_score = 50.0
-    score += sma_score * _WEIGHTS["sma"]
 
+def _score_sma(sma50: float, sma200: float, reasons: list[str]) -> float:
+    sma_ratio = sma50 / sma200
+    if sma_ratio > 1.02:
+        reasons.append("Golden cross — SMA 50 above SMA 200 (bullish)")
+        return 100.0
+    if sma_ratio > 1.0:
+        reasons.append("SMA 50 slightly above SMA 200")
+        return 70.0
+    if sma_ratio > 0.98:
+        reasons.append("SMA 50 near SMA 200 (neutral)")
+        return 40.0
+    reasons.append("Death cross — SMA 50 below SMA 200 (bearish)")
+    return 0.0
+
+
+def _score_adx(adx: float, bullish: bool | None, reasons: list[str]) -> float:
     if adx > 25:
+        if bullish is None:
+            reasons.append(f"ADX {adx:.0f} — strong trend, direction unclear")
+            return 50.0
         if bullish:
-            adx_score = 90.0
             reasons.append(f"ADX {adx:.0f} — strong bullish trend")
-        else:
-            adx_score = 20.0
-            reasons.append(f"ADX {adx:.0f} — strong bearish trend")
-    elif adx > 20:
-        adx_score = 50.0
-    else:
-        adx_score = 40.0
-        reasons.append(f"ADX {adx:.0f} — weak/no trend")
-    score += adx_score * _WEIGHTS["adx"]
+            return 90.0
+        reasons.append(f"ADX {adx:.0f} — strong bearish trend")
+        return 20.0
+    if adx > 20:
+        return 50.0
+    reasons.append(f"ADX {adx:.0f} — weak/no trend")
+    return 40.0
 
+
+def _score_volume(vol_ratio: float, bullish: bool | None, reasons: list[str]) -> float:
     if vol_ratio > 1.5:
+        if bullish is None:
+            return 60.0
         if bullish:
-            vol_score = 90.0
             reasons.append(f"Volume {vol_ratio:.1f}x above average (confirms bullish move)")
-        else:
-            vol_score = 15.0
-            reasons.append(f"Volume {vol_ratio:.1f}x above average (confirms bearish move)")
-    elif vol_ratio > 1.0:
-        vol_score = 60.0
-    elif vol_ratio > 0.5:
-        vol_score = 40.0
-    else:
-        vol_score = 20.0
-        reasons.append(f"Volume {vol_ratio:.1f}x below average (low interest)")
-    score += vol_score * _WEIGHTS["volume"]
+            return 90.0
+        reasons.append(f"Volume {vol_ratio:.1f}x above average (confirms bearish move)")
+        return 15.0
+    if vol_ratio > 1.0:
+        return 60.0
+    if vol_ratio > 0.5:
+        return 40.0
+    reasons.append(f"Volume {vol_ratio:.1f}x below average (low interest)")
+    return 20.0
 
-    return min(max(score, 0.0), 100.0), reasons
+
+def score_technical(indicators: dict[str, float | str | None]) -> ScoreResult:
+    reasons: list[str] = []
+    weighted_sum = 0.0
+    available_weight = 0.0
+
+    rsi = indicators["rsi"]
+    macd_line = indicators["macd_line"]
+    macd_signal = indicators["macd_signal"]
+    macd_dir = indicators["macd_direction"]
+    bb_pct = indicators["bb_pct"]
+    sma50 = indicators["sma50"]
+    sma200 = indicators["sma200"]
+    adx = indicators["adx"]
+    vol_ratio = indicators["volume_ratio"]
+
+    bullish = _is_bullish_trend(macd_line, macd_signal, sma50, sma200)  # type: ignore[arg-type]
+
+    if rsi is not None:
+        weighted_sum += _score_rsi(float(rsi), reasons) * _WEIGHTS["rsi"]
+        available_weight += _WEIGHTS["rsi"]
+    else:
+        reasons.append("RSI unavailable — not scored")
+
+    if macd_line is not None and macd_signal is not None:
+        macd_dir_str = str(macd_dir) if macd_dir is not None else None
+        weighted_sum += _score_macd(
+            float(macd_line), float(macd_signal), macd_dir_str, reasons,
+        ) * _WEIGHTS["macd"]
+        available_weight += _WEIGHTS["macd"]
+    else:
+        reasons.append("MACD unavailable — not scored")
+
+    if bb_pct is not None:
+        weighted_sum += _score_bb(float(bb_pct), reasons) * _WEIGHTS["bb"]
+        available_weight += _WEIGHTS["bb"]
+    else:
+        reasons.append("Bollinger Bands unavailable — not scored")
+
+    if sma50 is not None and sma200 is not None and float(sma200) > 0:
+        weighted_sum += _score_sma(float(sma50), float(sma200), reasons) * _WEIGHTS["sma"]
+        available_weight += _WEIGHTS["sma"]
+    else:
+        reasons.append("SMA 50/200 unavailable (insufficient history) — not scored")
+
+    if adx is not None:
+        weighted_sum += _score_adx(float(adx), bullish, reasons) * _WEIGHTS["adx"]
+        available_weight += _WEIGHTS["adx"]
+    else:
+        reasons.append("ADX unavailable — not scored")
+
+    if vol_ratio is not None:
+        weighted_sum += _score_volume(float(vol_ratio), bullish, reasons) * _WEIGHTS["volume"]
+        available_weight += _WEIGHTS["volume"]
+    else:
+        reasons.append("Volume data unavailable — not scored")
+
+    if available_weight < _MIN_AVAILABLE_WEIGHT:
+        reasons.append("Too few indicators available — technical score is neutral")
+        return ScoreResult(50.0, reasons, completeness=available_weight)
+
+    score = weighted_sum / available_weight
+    return ScoreResult(min(max(score, 0.0), 100.0), reasons, completeness=available_weight)

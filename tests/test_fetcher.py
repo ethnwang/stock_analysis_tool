@@ -35,13 +35,15 @@ class TestTickerInfoExtraction:
 
         assert info.name == "BAD"
         assert info.sector == "Unknown"
-        assert info.fundamentals["current_price"] == 0.0
+        assert info.fundamentals["current_price"] is None
 
-    def test_missing_fields_default_to_zero(self) -> None:
+    def test_missing_fields_default_to_none(self) -> None:
         info = _extract_ticker_info("EMPTY", {}, {}, {}, {}, {})
 
-        assert info.fundamentals["pe_ratio"] == 0.0
-        assert info.fundamentals["eps_growth"] == 0.0
+        assert info.fundamentals["pe_ratio"] is None
+        assert info.fundamentals["eps_growth"] is None
+        # dividend_yield is the deliberate exception: absence means non-payer
+        assert info.fundamentals["dividend_yield"] == 0.0
         assert info.name == "EMPTY"
 
     def test_forward_pe_fallback(self) -> None:

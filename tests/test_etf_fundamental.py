@@ -16,8 +16,8 @@ class TestScoreEtfFundamental:
             "dividend_yield": 0.015,
             "is_etf": 1.0,
         }
-        score, reasons = score_etf_fundamental(fundamentals)
-        assert score >= 75
+        result = score_etf_fundamental(fundamentals)
+        assert result.score >= 75
 
     def test_poor_etf_scores_low(self) -> None:
         fundamentals = {
@@ -31,8 +31,8 @@ class TestScoreEtfFundamental:
             "dividend_yield": 0.0,
             "is_etf": 1.0,
         }
-        score, reasons = score_etf_fundamental(fundamentals)
-        assert score <= 30
+        result = score_etf_fundamental(fundamentals)
+        assert result.score <= 30
 
     def test_score_in_valid_range(self) -> None:
         fundamentals = {
@@ -46,13 +46,14 @@ class TestScoreEtfFundamental:
             "dividend_yield": 0.02,
             "is_etf": 1.0,
         }
-        score, _ = score_etf_fundamental(fundamentals)
-        assert 0.0 <= score <= 100.0
+        result = score_etf_fundamental(fundamentals)
+        assert 0.0 <= result.score <= 100.0
 
     def test_missing_data_returns_neutral(self) -> None:
-        score, reasons = score_etf_fundamental({})
-        assert 0.0 <= score <= 100.0
-        assert len(reasons) > 0
+        result = score_etf_fundamental({})
+        assert result.score == 50.0
+        assert result.completeness < 0.4
+        assert len(result.reasons) > 0
 
     def test_returns_reasoning_strings(self) -> None:
         fundamentals = {
@@ -66,7 +67,8 @@ class TestScoreEtfFundamental:
             "dividend_yield": 0.01,
             "is_etf": 1.0,
         }
-        _, reasons = score_etf_fundamental(fundamentals)
+        result = score_etf_fundamental(fundamentals)
+        reasons = result.reasons
         assert len(reasons) == 6
         assert any("Expense" in r for r in reasons)
         assert any("return" in r.lower() for r in reasons)
@@ -84,9 +86,9 @@ class TestScoreEtfFundamental:
             "dividend_yield": 0.05,
             "is_etf": 1.0,
         }
-        aggressive_score, _ = score_etf_fundamental(fundamentals, "aggressive")
-        conservative_score, _ = score_etf_fundamental(fundamentals, "conservative")
-        assert aggressive_score != conservative_score
+        aggressive = score_etf_fundamental(fundamentals, "aggressive")
+        conservative = score_etf_fundamental(fundamentals, "conservative")
+        assert aggressive.score != conservative.score
 
     def test_low_expense_scores_higher_than_high_expense(self) -> None:
         base = {
@@ -101,9 +103,9 @@ class TestScoreEtfFundamental:
         }
         low_expense = {**base, "expense_ratio": 0.0003}
         high_expense = {**base, "expense_ratio": 0.012}
-        low_score, _ = score_etf_fundamental(low_expense)
-        high_score, _ = score_etf_fundamental(high_expense)
-        assert low_score > high_score
+        low = score_etf_fundamental(low_expense)
+        high = score_etf_fundamental(high_expense)
+        assert low.score > high.score
 
     def test_large_aum_scores_higher_than_small(self) -> None:
         base = {
@@ -118,6 +120,39 @@ class TestScoreEtfFundamental:
         }
         large_aum = {**base, "total_assets": 200_000_000_000}
         small_aum = {**base, "total_assets": 50_000_000}
-        large_score, _ = score_etf_fundamental(large_aum)
-        small_score, _ = score_etf_fundamental(small_aum)
-        assert large_score > small_score
+        large = score_etf_fundamental(large_aum)
+        small = score_etf_fundamental(small_aum)
+        assert large.score > small.score
+
+    def test_missing_expense_ratio_not_scored_as_ultra_low_cost(self) -> None:
+        fundamentals = {
+            "expense_ratio": None,
+            "total_assets": 10_000_000_000,
+            "top10_concentration": 0.30,
+            "one_year_return": 0.10,
+            "three_year_return": 0.10,
+            "five_year_return": 0.10,
+            "one_year_return_vs_cat": 0.0,
+            "dividend_yield": 0.01,
+            "is_etf": 1.0,
+        }
+        result = score_etf_fundamental(fundamentals)
+        assert not any("ultra-low cost" in r for r in result.reasons)
+        assert any("unavailable" in r.lower() for r in result.reasons)
+        assert result.completeness < 1.0
+
+    def test_partial_returns_history_still_scored(self) -> None:
+        fundamentals = {
+            "expense_ratio": 0.001,
+            "total_assets": 10_000_000_000,
+            "top10_concentration": 0.30,
+            "one_year_return": 0.15,
+            "three_year_return": None,
+            "five_year_return": None,
+            "one_year_return_vs_cat": 0.0,
+            "dividend_yield": 0.01,
+            "is_etf": 1.0,
+        }
+        result = score_etf_fundamental(fundamentals)
+        assert any("Blended return" in r for r in result.reasons)
+        assert result.completeness == 1.0

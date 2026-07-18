@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from analysis.etf_fundamental import score_etf_fundamental
 from analysis.fundamental import score_fundamental_adjusted
 from analysis.sentiment import score_sentiment
 from analysis.technical import compute_indicators, score_technical
-from data.models import ScoredStock
+from data.models import ScoredStock, ScoreResult
 from portfolio.loader import suggest_account
 
 if TYPE_CHECKING:
     from config import Config
     from data.models import StockData
 
+logger = logging.getLogger(__name__)
+
 OVERLAP_PENALTY = 5.0
 SECTOR_OVERWEIGHT_THRESHOLD = 30.0
 SECTOR_PENALTY = 3.0
+
+MIN_PRICE_BARS = 30
+
+INSUFFICIENT_DATA_LABEL = "Insufficient Data"
 
 
 def _recommendation_label(score: float) -> str:
@@ -28,36 +35,56 @@ def _recommendation_label(score: float) -> str:
     return "Avoid"
 
 
+def _score_technical_safe(stock: StockData) -> ScoreResult:
+    if len(stock.price_history) < MIN_PRICE_BARS:
+        return ScoreResult(
+            0.0,
+            [f"Insufficient price history (<{MIN_PRICE_BARS} bars) — technical not scored"],
+            completeness=0.0,
+        )
+    try:
+        indicators = compute_indicators(stock.price_history)
+        return score_technical(indicators)
+    except (KeyError, ValueError, IndexError, TypeError) as exc:
+        return ScoreResult(
+            0.0, [f"Technical analysis failed ({exc}) — not scored"], completeness=0.0,
+        )
+
+
 def score_stock(
     stock: StockData,
     config: Config,
     held_tickers: dict[str, list[dict[str, Any]]] | None = None,
     roth_ira_maxed: bool = False,
 ) -> ScoredStock | None:
-    try:
-        indicators = compute_indicators(stock.price_history)
-        tech_score, tech_reasons = score_technical(indicators)
-    except Exception:
-        tech_score = 50.0
-        tech_reasons = ["Insufficient price data for technical analysis"]
+    tech = _score_technical_safe(stock)
 
-    is_etf = stock.fundamentals.get("is_etf", 0.0) > 0
+    is_etf = (stock.fundamentals.get("is_etf") or 0.0) > 0
 
     if is_etf:
-        fund_score, fund_reasons = score_etf_fundamental(
-            stock.fundamentals, config.risk_profile
-        )
+        fund = score_etf_fundamental(stock.fundamentals, config.risk_profile)
     else:
-        fund_score, fund_reasons = score_fundamental_adjusted(
-            stock.fundamentals, config.risk_profile
-        )
-    sent_score, sent_reasons = score_sentiment(stock.news)
+        fund = score_fundamental_adjusted(stock.fundamentals, config.risk_profile)
+    sent = score_sentiment(stock.news)
 
-    composite = (
-        config.weight_technical * tech_score
-        + config.weight_fundamental * fund_score
-        + config.weight_sentiment * sent_score
-    )
+    # Pillars with zero completeness carry no information — drop them and
+    # renormalize the composite over what remains.
+    pillars = [
+        (config.weight_technical, tech),
+        (config.weight_fundamental, fund),
+        (config.weight_sentiment, sent),
+    ]
+    active = [(w, p) for w, p in pillars if p.completeness > 0]
+    if active:
+        active_weight = sum(w for w, _ in active)
+        composite = sum(w * p.score for w, p in active) / active_weight
+    else:
+        composite = 50.0
+    data_completeness = sum(w * p.completeness for w, p in pillars)
+
+    tech_score, tech_reasons = tech.score, tech.reasons
+    fund_score, fund_reasons = fund.score, fund.reasons
+    sent_score, sent_reasons = sent.score, sent.reasons
 
     reasoning = []
     reasoning.append(f"Technical: {tech_score:.0f}/100")
@@ -67,8 +94,8 @@ def score_stock(
     reasoning.append(f"Sentiment: {sent_score:.0f}/100")
     reasoning.extend(f"  {r}" for r in sent_reasons)
 
-    eps_growth = 0.0 if is_etf else stock.fundamentals.get("eps_growth", 0.0)
-    dividend_yield = stock.fundamentals.get("dividend_yield", 0.0)
+    eps_growth = 0.0 if is_etf else (stock.fundamentals.get("eps_growth") or 0.0)
+    dividend_yield = stock.fundamentals.get("dividend_yield") or 0.0
 
     is_held = False
     held_shares = 0.0
@@ -95,7 +122,15 @@ def score_stock(
                 f"(strong conviction — no penalty)"
             )
 
-    recommendation = _recommendation_label(composite)
+    insufficient_data = data_completeness < config.min_data_completeness
+    if insufficient_data:
+        recommendation = INSUFFICIENT_DATA_LABEL
+        reasoning.append(
+            f"Data completeness {data_completeness:.0%} below "
+            f"{config.min_data_completeness:.0%} threshold — score is unreliable"
+        )
+    else:
+        recommendation = _recommendation_label(composite)
 
     account, account_reason = suggest_account(
         eps_growth, dividend_yield, recommendation,
@@ -122,6 +157,8 @@ def score_stock(
         is_etf=is_etf,
         suggested_account=account,
         suggested_account_reason=account_reason,
+        data_completeness=round(data_completeness, 2),
+        insufficient_data=insufficient_data,
     )
 
 
@@ -150,6 +187,7 @@ def rank_stocks(
     sector_allocation: dict[str, float] | None = None,
     roth_ira_maxed: bool = False,
     return_all: bool = False,
+    include_incomplete: bool = False,
 ) -> list[ScoredStock]:
     scored: list[ScoredStock] = []
     for stock in stocks:
@@ -163,7 +201,14 @@ def rank_stocks(
     if sector_allocation:
         _apply_sector_penalties(scored, sector_allocation)
 
+    excluded = [s for s in scored if s.insufficient_data]
+    if excluded:
+        detail = ", ".join(f"{s.ticker} ({s.data_completeness:.0%})" for s in excluded)
+        logger.info("Excluded for insufficient data: %s", detail)
+
     scored.sort(key=lambda s: s.composite_score, reverse=True)
     if return_all:
         return scored
+    if not include_incomplete:
+        scored = [s for s in scored if not s.insufficient_data]
     return scored[: config.top_n]
