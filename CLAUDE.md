@@ -15,6 +15,12 @@ python3 main.py analyze --budget 500           # Custom monthly budget
 python3 main.py analyze --no-portfolio         # Skip portfolio-aware features
 python3 main.py analyze --universe etf         # ETF universe (~35 popular ETFs)
 python3 main.py analyze --ticker VOO QQQ SPY   # Specific ETFs (auto-detected)
+python3 main.py analyze --include-incomplete   # Keep low-data-quality stocks in ranking
+python3 main.py analyze --snapshot             # Record scores for later validation
+
+# Validation
+python3 main.py backtest --universe watchlist  # As-of technical backtest (3y history)
+python3 main.py backtest --eval-snapshots      # Validate past snapshots vs realized returns
 
 # Account-specific analysis
 python3 main.py analyze --account roth         # Schwab Roth IRA — holdings, swaps, reallocation
@@ -150,6 +156,7 @@ All settings via `.env` file (see `.env.example`):
 | `RISK_PROFILE` | `moderate` | `aggressive`, `moderate`, or `conservative` |
 | `MIN_PRICE` | `5.0` | Minimum stock price filter |
 | `MIN_MARKET_CAP` | `300000000` | Minimum market cap ($300M) |
+| `MIN_DATA_COMPLETENESS` | `0.5` | Below this weighted data-completeness fraction, a stock is excluded as "Insufficient Data" |
 | `SCHWAB_CLIENT_ID` | (none) | Schwab API client ID |
 | `SCHWAB_CLIENT_SECRET` | (none) | Schwab API client secret |
 | `SCHWAB_REFRESH_TOKEN` | (none) | Schwab OAuth refresh token (set by `link`) |
@@ -165,7 +172,19 @@ Weights are auto-normalized if they don't sum to 1.0. If all weights are zero, t
 
 Composite score = (tech_weight × technical) + (fund_weight × fundamental) + (sent_weight × sentiment)
 
-Each sub-score is 0–100. Recommendations: Strong Buy (80+), Buy (65–79), Hold (45–64), Avoid (<45).
+Each sub-score is 0–100. Recommendations: Strong Buy (80+), Buy (65–79), Hold (45–64), Avoid (<45), plus "Insufficient Data" when completeness is too low.
+
+### Data Quality & Completeness
+
+Missing data is represented as `None` end-to-end (never `0.0`): the fetcher's `_EMPTY_FUNDAMENTALS`/`_EMPTY_ETF_FUNDAMENTALS` default to `None`, and every scorer skips absent metrics, renormalizing the remaining weights instead of scoring fabricated zeros. Each scorer returns a `ScoreResult(score, reasons, completeness)` where `completeness` is the weight-fraction of inputs actually present; below 0.4 available weight, a scorer returns neutral 50.
+
+**The one deliberate exception**: `dividend_yield` defaults to `0.0` when absent, because Yahoo omits the field for non-payers — absence *is* the signal.
+
+At the engine level, pillars (technical/fundamental/sentiment) with zero completeness are dropped and the composite is renormalized over the remainder. Per-stock `data_completeness` = weighted sum of pillar completeness, shown as the `Data` column in reports. Stocks below `MIN_DATA_COMPLETENESS` (default 0.5) are labeled "Insufficient Data" and excluded from rankings unless `--include-incomplete` is passed (marked `!`). A stock with unknown market cap passes the size filter but logs an INFO line.
+
+### Sector-Relative Valuation
+
+`rank_stocks` builds per-sector medians (P/E, D/E, EPS growth, revenue growth) from the fetched batch (`analysis/relative.py`). With ≥5 sector peers, P/E and D/E are banded on ratio-to-sector-median (≤0.6 → 100 … >1.5 → 10) with reasons citing both values; growth keeps absolute bands plus a clamped ±10 adjustment vs the median. Below 5 peers, for Unknown sectors, ETFs, or negative P/E, the absolute bands apply. Medians are **batch-relative**: meaningful for `--universe sp500`, mostly falls back on the 48-name watchlist.
 
 ### Risk Profiles
 
@@ -205,7 +224,13 @@ Keyword and phrase-based analysis of news headlines and summaries. Two-tier matc
 
 **Recency weighting**: Articles from the last 24 hours count 2x, 1–3 days count 1x, older than 3 days count 0.5x.
 
-Score = (positive signals / total signals) × 100. No news = neutral (50).
+**Robustness** (all in `analysis/sentiment.py`):
+- **Shrinkage**: score = (pos + k)/(pos + neg + 2k) × 100 with k=3 — one lone positive signal lands ~57, not 100; it takes ~10 net signals to clear 75. Zero signals = exactly 50.
+- **Negation**: a keyword preceded within 2 tokens by "not"/"fails"/"never"/etc. flips polarity ("not strong" counts negative).
+- **Neutral tokens**: bare "revenue", "debt", "launch", "contract" carry no sentiment; directional phrases ("revenue beat", "rising debt", "wins contract") do.
+- **Dedup**: headlines with token-set Jaccard ≥ 0.8 are the same syndicated story, counted once.
+
+Sentiment completeness = unique articles / 5 (capped at 1.0); no news = completeness 0 (pillar dropped from composite).
 
 ### ETF Fundamental Scoring
 
@@ -334,7 +359,8 @@ Swap thresholds are in `portfolio/loader.py` (`WEAK_THRESHOLD = 50.0`, `MIN_SWAP
 ## Known Limitations
 
 - Sentiment is keyword/phrase-based, not ML — works for obvious signals, misses nuance and sarcasm
-- No backtesting engine — scores reflect current snapshot only
+- Backtesting covers the technical pillar only — fundamentals/sentiment aren't available as-of historical dates; composite validation accrues through `--snapshot` history over time
+- Sector-relative valuation is batch-relative — small universes (watchlist) mostly fall back to absolute bands
 - No options or derivatives data
 - yahooquery uses unofficial Yahoo Finance endpoints — can break if Yahoo changes their API
 - Yahoo RSS feed (`feeds.finance.yahoo.com`) is an unofficial endpoint and may also break
@@ -343,10 +369,23 @@ Swap thresholds are in `portfolio/loader.py` (`WEAK_THRESHOLD = 50.0`, `MIN_SWAP
 - Fidelity is not available via Plaid — must use CSV import
 - 401(k) accounts are not selectable for `--account` analysis (employer-managed, limited reallocation options)
 
+## Backtesting & Snapshots
+
+```bash
+python3 main.py backtest --ticker AAPL MSFT NVDA JPM --years 3   # as-of technical backtest
+python3 main.py backtest --universe watchlist                    # backtest the watchlist
+python3 main.py analyze --snapshot                               # append scores to snapshots/scores.jsonl
+python3 main.py backtest --eval-snapshots                        # validate accumulated snapshots vs realized returns
+```
+
+The `backtest` subcommand (`backtest/engine.py`) scores each ticker as-of historical dates using only bars up to that date (no lookahead — the input frame is sliced), then reports mean cross-sectional Spearman rank correlation between scores and 21/63-bar forward returns, plus mean forward return per score quintile. It fetches its own 3-year history (SMA200 warm-up + forward window don't fit the 365-day default). **Technical pillar only** — fundamentals and sentiment aren't available as-of past dates.
+
+`analyze --snapshot` appends the full scored cross-section to `snapshots/scores.jsonl` (gitignored, one JSON object per line). After snapshots are ≥21 days old, `backtest --eval-snapshots` compares snapshot composites against realized returns — the honest way to validate the composite score over time. Snapshot the whole universe (not a 2-ticker list) so cross-sectional statistics have enough names.
+
 ## Testing
 
 ```bash
 python3 -m pytest tests/ -v
 ```
 
-134 tests covering technical analysis, fundamental scoring (stock and ETF), sentiment analysis, portfolio management, account placement, swap suggestions, CLI argument parsing, data fetching, and universe resolution. Tests use hardcoded data fixtures — no API calls. All analysis and scoring logic is testable offline.
+~190 tests covering technical analysis, fundamental scoring (stock and ETF), sector-relative valuation, sentiment analysis (shrinkage/negation/dedup), data completeness and exclusion, backtest statistics and snapshot round-trips, portfolio management, account placement, swap suggestions, CLI argument parsing, data fetching, and universe resolution. Tests use hardcoded data fixtures — no API calls. All analysis and scoring logic is testable offline.
