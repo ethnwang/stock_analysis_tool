@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -192,6 +193,62 @@ def suggest_account(
 # raw-linear compresses a 66 vs 90 into ~1.4x; conviction should matter more.
 _SIZING_BASELINE = 45.0
 
+# Inverse-volatility scaling: a high-conviction but high-volatility name gets a
+# smaller slice than an equally-scored calm one. The scalar is clamped so vol
+# adjusts sizes but never dominates conviction.
+_VOL_SCALAR_MIN = 0.5
+_VOL_SCALAR_MAX = 2.0
+
+# No single monthly buy exceeds this fraction of the budget; excess
+# redistributes to the other buyable names (or stays unallocated).
+MAX_POSITION_FRACTION = 0.35
+
+
+def _sizing_weights(buyable: list[ScoredStock]) -> dict[str, float]:
+    vols = [
+        s.realized_vol for s in buyable
+        if s.realized_vol is not None and s.realized_vol > 0
+    ]
+    median_vol = statistics.median(vols) if vols else None
+
+    weights: dict[str, float] = {}
+    for s in buyable:
+        conviction = max(s.composite_score - _SIZING_BASELINE, 1.0)
+        vol_scalar = 1.0
+        if median_vol is not None and s.realized_vol is not None and s.realized_vol > 0:
+            vol_scalar = min(
+                max(median_vol / s.realized_vol, _VOL_SCALAR_MIN), _VOL_SCALAR_MAX,
+            )
+        weights[s.ticker] = conviction * vol_scalar
+    return weights
+
+
+def _capped_fractions(weights: dict[str, float]) -> dict[str, float]:
+    """Proportional budget fractions with an iterative per-position cap:
+    capped names hold at MAX_POSITION_FRACTION and the excess redistributes
+    across the uncapped names. If everything caps, the rest stays unallocated."""
+    total = sum(weights.values())
+    fractions = {t: w / total for t, w in weights.items()}
+    capped: set[str] = set()
+    for _ in range(len(fractions)):
+        over = {
+            t for t, f in fractions.items()
+            if t not in capped and f > MAX_POSITION_FRACTION + 1e-9
+        }
+        if not over:
+            break
+        capped |= over
+        for t in over:
+            fractions[t] = MAX_POSITION_FRACTION
+        free = [t for t in fractions if t not in capped]
+        remaining = 1.0 - MAX_POSITION_FRACTION * len(capped)
+        if not free or remaining <= 0:
+            break
+        free_weight = sum(weights[t] for t in free)
+        for t in free:
+            fractions[t] = weights[t] / free_weight * remaining
+    return fractions
+
 
 def compute_position_sizes(
     ranked: list[ScoredStock],
@@ -201,16 +258,14 @@ def compute_position_sizes(
     if not buyable or monthly_budget <= 0:
         return
 
-    weights = {
-        s.ticker: max(s.composite_score - _SIZING_BASELINE, 1.0) for s in buyable
-    }
-    total_weight = sum(weights.values())
-    if total_weight <= 0:
+    weights = _sizing_weights(buyable)
+    if sum(weights.values()) <= 0:
         return
+    fractions = _capped_fractions(weights)
 
     for stock in buyable:
         stock.suggested_amount = round(
-            monthly_budget * (weights[stock.ticker] / total_weight), 2
+            monthly_budget * fractions[stock.ticker], 2
         )
         if stock.current_price > 0:
             stock.suggested_shares = round(

@@ -60,9 +60,11 @@ class TickerInfo(NamedTuple):
 # dividend_yield is the deliberate exception: Yahoo omits it for non-payers,
 # so absence means "pays no dividend" and defaults to 0.0.
 _EMPTY_FUNDAMENTALS: dict[str, float | None] = {
-    "pe_ratio": None, "eps_growth": None, "revenue_growth": None,
-    "debt_to_equity": None, "dividend_yield": 0.0, "market_cap": None,
-    "current_price": None,
+    "pe_ratio": None, "forward_pe": None, "eps_growth": None,
+    "revenue_growth": None, "debt_to_equity": None, "dividend_yield": 0.0,
+    "market_cap": None, "current_price": None,
+    "gross_margin": None, "profit_margin": None, "roe": None,
+    "fcf_yield": None, "beta": None,
 }
 
 _EMPTY_ETF_FUNDAMENTALS: dict[str, float | None] = {
@@ -133,14 +135,28 @@ def _extract_ticker_info(
         return TickerInfo(_EMPTY_FUNDAMENTALS.copy(), ticker, "Unknown")
 
     de_raw = _opt_float(fd.get("debtToEquity"))
+    market_cap = _opt_float(sd.get("marketCap"))
+    fcf = _opt_float(fd.get("freeCashflow"))
     fundamentals: dict[str, float | None] = {
-        "pe_ratio": _opt_float(sd.get("trailingPE")) or _opt_float(sd.get("forwardPE")),
+        # Trailing only — mixing trailing and forward bases across peers would
+        # corrupt the sector medians. Scorers fall back to forward_pe explicitly.
+        "pe_ratio": _opt_float(sd.get("trailingPE")),
+        "forward_pe": _opt_float(sd.get("forwardPE")),
         "eps_growth": _opt_float(ks.get("earningsQuarterlyGrowth")),
         "revenue_growth": _opt_float(fd.get("revenueGrowth")),
         "debt_to_equity": None if de_raw is None else de_raw / 100.0,
         "dividend_yield": _opt_float(sd.get("dividendYield")) or 0.0,
-        "market_cap": _opt_float(sd.get("marketCap")),
+        "market_cap": market_cap,
         "current_price": _opt_float(fd.get("currentPrice")) or _opt_float(sd.get("regularMarketPrice")),
+        "gross_margin": _opt_float(fd.get("grossMargins")),
+        "profit_margin": _opt_float(fd.get("profitMargins")),
+        "roe": _opt_float(fd.get("returnOnEquity")),
+        "fcf_yield": (
+            fcf / market_cap
+            if fcf is not None and market_cap is not None and market_cap > 0
+            else None
+        ),
+        "beta": _opt_float(sd.get("beta")) or _opt_float(ks.get("beta")),
     }
     name = qt.get("shortName") or qt.get("longName") or ticker
     sector = profile.get("sector", "Unknown")
@@ -347,6 +363,7 @@ def fetch_all(tickers: list[str], config: Config) -> list[StockData]:
     all_fund = fetch_fundamentals_batch(valid_tickers)
 
     filtered: list[tuple[str, TickerInfo]] = []
+    cap_filter_skipped: list[str] = []
     for ticker in valid_tickers:
         info = all_fund.get(ticker, TickerInfo(_EMPTY_FUNDAMENTALS.copy(), ticker, "Unknown"))
         price = info.fundamentals["current_price"]
@@ -361,11 +378,17 @@ def fetch_all(tickers: list[str], config: Config) -> list[StockData]:
         is_etf = (info.fundamentals.get("is_etf") or 0.0) > 0
         if mc is None:
             if not is_etf:
-                logger.info("Market cap unknown for %s — min-market-cap filter not applied", ticker)
+                cap_filter_skipped.append(ticker)
         elif mc < config.min_market_cap:
             logger.debug("Filtered %s: market cap $%.0f < min $%.0f", ticker, mc, config.min_market_cap)
             continue
         filtered.append((ticker, info))
+
+    if cap_filter_skipped:
+        logger.info(
+            "Market cap unknown for %d tickers (min-market-cap filter not applied): %s",
+            len(cap_filter_skipped), ", ".join(sorted(cap_filter_skipped)),
+        )
 
     logger.info("Fetching news for %d stocks...", len(filtered))
     finnhub_limiter = RateLimiter(max_calls=55, window_seconds=60.0)

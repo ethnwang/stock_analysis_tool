@@ -4,6 +4,8 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from data.fetcher import (
     RateLimiter,
     TickerInfo,
@@ -46,10 +48,31 @@ class TestTickerInfoExtraction:
         assert info.fundamentals["dividend_yield"] == 0.0
         assert info.name == "EMPTY"
 
-    def test_forward_pe_fallback(self) -> None:
+    def test_forward_pe_kept_separate_from_trailing(self) -> None:
+        # Mixing trailing and forward bases would corrupt sector medians —
+        # forward P/E is stored separately and the scorer falls back explicitly.
         sd = {"forwardPE": 30.0}
         info = _extract_ticker_info("FWD", sd, {}, {}, {}, {})
-        assert info.fundamentals["pe_ratio"] == 30.0
+        assert info.fundamentals["pe_ratio"] is None
+        assert info.fundamentals["forward_pe"] == 30.0
+
+    def test_quality_fields_extracted(self) -> None:
+        sd = {"marketCap": 1_000_000_000, "beta": 1.2}
+        fd = {
+            "grossMargins": 0.55, "profitMargins": 0.22,
+            "returnOnEquity": 0.31, "freeCashflow": 50_000_000,
+        }
+        info = _extract_ticker_info("QLT", sd, {}, fd, {}, {})
+        assert info.fundamentals["gross_margin"] == 0.55
+        assert info.fundamentals["profit_margin"] == 0.22
+        assert info.fundamentals["roe"] == 0.31
+        assert info.fundamentals["beta"] == 1.2
+        assert info.fundamentals["fcf_yield"] == pytest.approx(0.05)
+
+    def test_fcf_yield_requires_market_cap(self) -> None:
+        fd = {"freeCashflow": 50_000_000}
+        info = _extract_ticker_info("NOFCF", {}, {}, fd, {}, {})
+        assert info.fundamentals["fcf_yield"] is None
 
     def test_name_fallback_to_long_name(self) -> None:
         qt = {"longName": "Long Name Corp"}

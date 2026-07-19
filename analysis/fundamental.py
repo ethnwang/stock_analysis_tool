@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from analysis.xsection import FactorStats, blend_with_percentile
 from data.models import ScoreResult
 
 if TYPE_CHECKING:
@@ -13,13 +14,16 @@ _MIN_AVAILABLE_WEIGHT = 0.4
 
 _RISK_WEIGHTS: dict[str, dict[str, float]] = {
     "aggressive": {
-        "pe": 0.10, "eps": 0.35, "rev": 0.30, "de": 0.10, "div": 0.15,
+        "pe": 0.10, "eps": 0.25, "rev": 0.25, "de": 0.05, "div": 0.05,
+        "roe": 0.10, "margin": 0.10, "fcf": 0.10,
     },
     "moderate": {
-        "pe": 0.25, "eps": 0.25, "rev": 0.20, "de": 0.15, "div": 0.15,
+        "pe": 0.20, "eps": 0.15, "rev": 0.15, "de": 0.10, "div": 0.10,
+        "roe": 0.10, "margin": 0.10, "fcf": 0.10,
     },
     "conservative": {
-        "pe": 0.30, "eps": 0.15, "rev": 0.10, "de": 0.20, "div": 0.25,
+        "pe": 0.25, "eps": 0.05, "rev": 0.05, "de": 0.15, "div": 0.20,
+        "roe": 0.10, "margin": 0.10, "fcf": 0.10,
     },
 }
 
@@ -150,6 +154,96 @@ def _score_de(de_ratio: float, reasons: list[str]) -> float:
     return 0.0
 
 
+def _score_roe(roe: float, reasons: list[str] | None = None) -> float:
+    if roe > 0.25:
+        score, label = 90.0, "excellent capital efficiency"
+    elif roe > 0.15:
+        score, label = 75.0, "strong"
+    elif roe > 0.08:
+        score, label = 55.0, "adequate"
+    elif roe > 0:
+        score, label = 35.0, "weak"
+    else:
+        score, label = 15.0, "destroying shareholder value"
+    if reasons is not None:
+        reasons.append(f"ROE {roe:.0%} — {label}")
+    return score
+
+
+def _score_margin_relative(
+    gross_margin: float, sector_median: float, reasons: list[str] | None = None,
+) -> float:
+    # Margins are hugely sector-dependent (software ~80%, retail ~25%), so the
+    # signal is the spread vs sector peers, not the level.
+    diff = gross_margin - sector_median
+    if diff >= 0.15:
+        score, label = 90.0, "far above sector norm"
+    elif diff >= 0.05:
+        score, label = 70.0, "above sector norm"
+    elif diff >= -0.05:
+        score, label = 50.0, "near sector norm"
+    elif diff >= -0.15:
+        score, label = 30.0, "below sector norm"
+    else:
+        score, label = 15.0, "far below sector norm"
+    if reasons is not None:
+        reasons.append(
+            f"Gross margin {gross_margin:.0%} vs sector median {sector_median:.0%} — {label}"
+        )
+    return score
+
+
+def _score_profit_margin(profit_margin: float, reasons: list[str] | None = None) -> float:
+    if profit_margin > 0.20:
+        score, label = 90.0, "highly profitable"
+    elif profit_margin > 0.10:
+        score, label = 70.0, "solid profitability"
+    elif profit_margin > 0.03:
+        score, label = 55.0, "modest profitability"
+    elif profit_margin > 0:
+        score, label = 40.0, "thin margins"
+    else:
+        score, label = 15.0, "unprofitable"
+    if reasons is not None:
+        reasons.append(f"Profit margin {profit_margin:.0%} — {label}")
+    return score
+
+
+def _score_fcf_yield(fcf_yield: float, reasons: list[str] | None = None) -> float:
+    if fcf_yield > 0.06:
+        score, label = 90.0, "strong cash generation for the price"
+    elif fcf_yield > 0.03:
+        score, label = 75.0, "healthy cash generation"
+    elif fcf_yield > 0.01:
+        score, label = 55.0, "modest cash generation"
+    elif fcf_yield >= 0:
+        score, label = 40.0, "minimal free cash flow"
+    else:
+        score, label = 20.0, "burning cash"
+    if reasons is not None:
+        reasons.append(f"FCF yield {fcf_yield:.1%} — {label}")
+    return score
+
+
+def quality_component_score(fundamentals: dict[str, float | None]) -> float | None:
+    """Equal-weighted mean of the available quality sub-scores (ROE, profit
+    margin, FCF yield) — tracked in snapshot components so quality's standalone
+    predictive power is measurable."""
+    scores: list[float] = []
+    roe = fundamentals.get("roe")
+    if roe is not None:
+        scores.append(_score_roe(roe))
+    profit_margin = fundamentals.get("profit_margin")
+    if profit_margin is not None:
+        scores.append(_score_profit_margin(profit_margin))
+    fcf_yield = fundamentals.get("fcf_yield")
+    if fcf_yield is not None:
+        scores.append(_score_fcf_yield(fcf_yield))
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
 def _score_dividend(div_yield: float, reasons: list[str]) -> float:
     if div_yield > 0.04:
         reasons.append(f"Dividend yield {div_yield:.1%} — strong income")
@@ -169,6 +263,7 @@ def score_fundamental_adjusted(
     risk_profile: str = "moderate",
     sector_stats: SectorStats | None = None,
     sector: str = "Unknown",
+    factor_stats: FactorStats | None = None,
 ) -> ScoreResult:
     w = _RISK_WEIGHTS.get(risk_profile, _RISK_WEIGHTS["moderate"])
     aggressive = risk_profile == "aggressive"
@@ -178,23 +273,37 @@ def score_fundamental_adjusted(
     available_weight = 0.0
 
     pe = fundamentals.get("pe_ratio")
+    forward_pe = fundamentals.get("forward_pe")
     eps_growth = fundamentals.get("eps_growth")
     rev_growth = fundamentals.get("revenue_growth")
     de_ratio = fundamentals.get("debt_to_equity")
     # dividend_yield: absence means "pays no dividend" — always scored
     div_yield = fundamentals.get("dividend_yield") or 0.0
+    roe = fundamentals.get("roe")
+    gross_margin = fundamentals.get("gross_margin")
+    profit_margin = fundamentals.get("profit_margin")
+    fcf_yield = fundamentals.get("fcf_yield")
 
     pe_median = sector_stats.get(sector, "pe_ratio") if sector_stats else None
     de_median = sector_stats.get(sector, "debt_to_equity") if sector_stats else None
     eps_median = sector_stats.get(sector, "eps_growth") if sector_stats else None
     rev_median = sector_stats.get(sector, "revenue_growth") if sector_stats else None
+    margin_median = sector_stats.get(sector, "gross_margin") if sector_stats else None
 
     if pe is not None:
         if pe > 0 and pe_median is not None:
             pe_score = _score_pe_relative(pe, pe_median, reasons)
         else:
             pe_score = _score_pe(pe, aggressive, reasons)
+        if pe > 0:
+            pe_score = blend_with_percentile(pe_score, "pe_ratio", pe, factor_stats)
         weighted_sum += pe_score * w["pe"]
+        available_weight += w["pe"]
+    elif forward_pe is not None:
+        # Absolute bands only: sector medians are trailing-basis, and mixing
+        # bases within one comparison would corrupt the relative signal.
+        reasons.append(f"Trailing P/E unavailable — using forward P/E {forward_pe:.1f}")
+        weighted_sum += _score_pe(forward_pe, aggressive, reasons) * w["pe"]
         available_weight += w["pe"]
     else:
         reasons.append("P/E unavailable — not scored")
@@ -227,6 +336,41 @@ def score_fundamental_adjusted(
 
     weighted_sum += _score_dividend(div_yield, reasons) * w["div"]
     available_weight += w["div"]
+
+    if roe is not None:
+        roe_score = blend_with_percentile(
+            _score_roe(roe, reasons), "roe", roe, factor_stats,
+        )
+        weighted_sum += roe_score * w["roe"]
+        available_weight += w["roe"]
+    else:
+        reasons.append("ROE unavailable — not scored")
+
+    if gross_margin is not None and margin_median is not None:
+        margin_score = _score_margin_relative(gross_margin, margin_median, reasons)
+    elif profit_margin is not None:
+        margin_score = _score_profit_margin(profit_margin, reasons)
+    else:
+        # Absolute gross-margin bands would be sector noise (software ~80%,
+        # retail ~25%) — without a sector median or a profit margin, skip.
+        margin_score = None
+        reasons.append("Margins unavailable — not scored")
+    if margin_score is not None:
+        if gross_margin is not None:
+            margin_score = blend_with_percentile(
+                margin_score, "gross_margin", gross_margin, factor_stats,
+            )
+        weighted_sum += margin_score * w["margin"]
+        available_weight += w["margin"]
+
+    if fcf_yield is not None:
+        fcf_score = blend_with_percentile(
+            _score_fcf_yield(fcf_yield, reasons), "fcf_yield", fcf_yield, factor_stats,
+        )
+        weighted_sum += fcf_score * w["fcf"]
+        available_weight += w["fcf"]
+    else:
+        reasons.append("FCF yield unavailable — not scored")
 
     if available_weight < _MIN_AVAILABLE_WEIGHT:
         reasons.append("Too few fundamentals available — score is neutral")

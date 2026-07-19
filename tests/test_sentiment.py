@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from analysis.sentiment import _analyze_text, _recency_weight, score_sentiment
+from analysis.sentiment_backends import LexiconBackend, get_backend
 
 
 class TestAnalyzeText:
@@ -195,3 +196,67 @@ class TestDedup:
         ]
         result = score_sentiment(news)
         assert "2 unique articles" in result.reasons[0]
+
+
+class _FakeBackend:
+    """Deterministic backend for exercising the seam without any model."""
+
+    name = "fake"
+
+    def __init__(self, pairs: list[tuple[float, float]]) -> None:
+        self._pairs = pairs
+
+    def classify(self, texts: list[str]) -> list[tuple[float, float]]:
+        assert len(texts) == len(self._pairs)
+        return list(self._pairs)
+
+
+class TestSentimentBackends:
+    def test_fake_backend_drives_score_through_aggregation(self) -> None:
+        news = [
+            {"headline": f"Neutral wording headline {i}", "summary": ""}
+            for i in range(4)
+        ]
+        bullish = score_sentiment(news, backend=_FakeBackend([(2.0, 0.0)] * 4))
+        bearish = score_sentiment(news, backend=_FakeBackend([(0.0, 2.0)] * 4))
+        assert bullish.score > 60
+        assert bearish.score < 40
+        assert any("fake backend" in r for r in bullish.reasons)
+
+    def test_lexicon_backend_matches_builtin_path(self) -> None:
+        texts = [
+            "Company beats estimates with strong growth",
+            "Regulators open fraud investigation into supplier",
+            "not strong quarter, fails to beat",
+            "Nothing notable happened today",
+        ]
+        pairs = LexiconBackend().classify(texts)
+        assert pairs == [
+            tuple(float(x) for x in _analyze_text(t)) for t in texts
+        ]
+
+    def test_backend_none_keeps_default_output_identical(self) -> None:
+        news = [
+            {"headline": "Company beats estimates with strong growth", "summary": ""},
+        ]
+        default = score_sentiment(news)
+        explicit_none = score_sentiment(news, backend=None)
+        assert default.score == explicit_none.score
+        assert default.reasons == explicit_none.reasons
+
+    def test_get_backend_lexicon_returns_none(self) -> None:
+        assert get_backend("lexicon") is None
+        assert get_backend("") is None
+        assert get_backend("LEXICON") is None
+
+    def test_get_backend_unknown_falls_back(self) -> None:
+        assert get_backend("gpt-neo-9000") is None
+
+    def test_get_backend_finbert_import_failure_falls_back(self, monkeypatch) -> None:
+        from analysis import sentiment_backends
+
+        def _boom(self) -> None:
+            raise ImportError("No module named 'transformers'")
+
+        monkeypatch.setattr(sentiment_backends.FinBERTBackend, "__init__", _boom)
+        assert get_backend("finbert") is None

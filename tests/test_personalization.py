@@ -205,6 +205,27 @@ class TestPortfolioOverlap:
         assert result.is_held is False
         assert result.overlap_penalty == 0
 
+    def test_overlap_penalty_tapers_continuously(self) -> None:
+        # No cliff at the Strong Buy cutoff: penalties just below and above 80
+        # must be near zero, and a mid-60s composite gets the full 5 points.
+        from scoring.engine import (
+            OVERLAP_PENALTY,
+            OVERLAP_TAPER_END,
+            OVERLAP_TAPER_START,
+        )
+
+        def penalty_at(composite: float) -> float:
+            taper = (OVERLAP_TAPER_END - composite) / (
+                OVERLAP_TAPER_END - OVERLAP_TAPER_START
+            )
+            return OVERLAP_PENALTY * min(max(taper, 0.0), 1.0)
+
+        assert penalty_at(60.0) == pytest.approx(OVERLAP_PENALTY)
+        assert penalty_at(65.0) == pytest.approx(OVERLAP_PENALTY)
+        assert penalty_at(79.0) == pytest.approx(penalty_at(81.0), abs=0.4)
+        assert penalty_at(80.0) == 0.0
+        assert penalty_at(72.5) == pytest.approx(OVERLAP_PENALTY / 2)
+
     def test_held_accounts_populated(self) -> None:
         stock = make_stock("NVDA")
         config = default_config()
@@ -243,54 +264,101 @@ class TestSectorDiversification:
         assert ranked[0].sector_penalty == 0
 
 
+def _buyable(
+    ticker: str,
+    composite: float,
+    recommendation: str = "Buy",
+    price: float = 100.0,
+    realized_vol: float | None = None,
+) -> ScoredStock:
+    return ScoredStock(
+        ticker=ticker, name=ticker, sector="Tech", current_price=price,
+        technical_score=70, fundamental_score=80, sentiment_score=60,
+        composite_score=composite, recommendation=recommendation,
+        realized_vol=realized_vol,
+    )
+
+
 class TestPositionSizing:
     def test_budget_split_proportional_to_score(self) -> None:
-        s1 = ScoredStock(
-            ticker="A", name="A", sector="Tech", current_price=100.0,
-            technical_score=70, fundamental_score=80, sentiment_score=60,
-            composite_score=75.0, recommendation="Buy",
-        )
-        s2 = ScoredStock(
-            ticker="B", name="B", sector="Tech", current_price=50.0,
-            technical_score=70, fundamental_score=80, sentiment_score=60,
-            composite_score=65.0, recommendation="Buy",
-        )
-        compute_position_sizes([s1, s2], 1000.0)
-        assert s1.suggested_amount > s2.suggested_amount
-        assert abs(s1.suggested_amount + s2.suggested_amount - 1000.0) < 0.05
+        # Scores close enough that the 35% cap never binds
+        stocks = [
+            _buyable("A", 69.0), _buyable("B", 68.0),
+            _buyable("C", 67.0), _buyable("D", 66.0),
+        ]
+        compute_position_sizes(stocks, 1000.0)
+        amounts = [s.suggested_amount for s in stocks]
+        assert amounts == sorted(amounts, reverse=True)
+        assert sum(amounts) == pytest.approx(1000.0, abs=0.05)
 
     def test_only_buy_recommendations_get_allocation(self) -> None:
-        buy = ScoredStock(
-            ticker="A", name="A", sector="Tech", current_price=100.0,
-            technical_score=70, fundamental_score=80, sentiment_score=60,
-            composite_score=70.0, recommendation="Buy",
-        )
-        hold = ScoredStock(
-            ticker="B", name="B", sector="Tech", current_price=50.0,
-            technical_score=50, fundamental_score=50, sentiment_score=50,
-            composite_score=50.0, recommendation="Hold",
-        )
+        buy = _buyable("A", 70.0)
+        hold = _buyable("B", 50.0, recommendation="Hold", price=50.0)
         compute_position_sizes([buy, hold], 1000.0)
-        assert buy.suggested_amount == 1000.0
+        assert buy.suggested_amount > 0
         assert hold.suggested_amount == 0.0
 
+    def test_single_position_capped_at_max_fraction(self) -> None:
+        from portfolio.loader import MAX_POSITION_FRACTION
+
+        s = _buyable("A", 70.0)
+        compute_position_sizes([s], 1000.0)
+        assert s.suggested_amount == pytest.approx(1000.0 * MAX_POSITION_FRACTION)
+
+    def test_cap_excess_redistributes_to_uncapped(self) -> None:
+        # A's raw weight is 45/(45+21*3) = 41.7% — above the 35% cap; the
+        # excess must flow to B/C/D, and the full budget stays allocated.
+        stocks = [
+            _buyable("A", 90.0), _buyable("B", 66.0),
+            _buyable("C", 66.0), _buyable("D", 66.0),
+        ]
+        compute_position_sizes(stocks, 1000.0)
+        assert stocks[0].suggested_amount == pytest.approx(350.0, abs=0.05)
+        for s in stocks[1:]:
+            assert s.suggested_amount == pytest.approx(650.0 / 3, abs=0.05)
+
+    def test_high_vol_sized_smaller_at_equal_score(self) -> None:
+        # Vol spread chosen so no fraction hits the 35% cap
+        stocks = [
+            _buyable("CALM", 70.0, realized_vol=0.25),
+            _buyable("MID1", 70.0, realized_vol=0.28),
+            _buyable("MID2", 70.0, realized_vol=0.32),
+            _buyable("WILD", 70.0, realized_vol=0.40),
+        ]
+        compute_position_sizes(stocks, 1000.0)
+        amounts = [s.suggested_amount for s in stocks]
+        assert amounts == sorted(amounts, reverse=True)
+        assert amounts[0] > amounts[-1]
+
+    def test_missing_vol_is_neutral(self) -> None:
+        with_vol = _buyable("V", 70.0, realized_vol=0.30)
+        without = _buyable("N", 70.0)
+        third = _buyable("T", 70.0, realized_vol=0.30)
+        compute_position_sizes([with_vol, without, third], 900.0)
+        # median vol == both known vols -> scalar 1.0 everywhere -> equal split
+        assert with_vol.suggested_amount == pytest.approx(without.suggested_amount)
+
+    def test_vol_scalar_clamped(self) -> None:
+        # 0.30 / 0.01 = 30x raw — must clamp to 2x, so the calm name gets at
+        # most ~2x the weight of the median name, not 30x
+        tiny_vol = _buyable("TINY", 70.0, realized_vol=0.01)
+        normal = _buyable("NORM", 70.0, realized_vol=0.30)
+        other = _buyable("OTHR", 70.0, realized_vol=0.30)
+        compute_position_sizes([tiny_vol, normal, other], 1000.0)
+        assert tiny_vol.suggested_amount <= 2.05 * normal.suggested_amount
+
     def test_zero_budget_no_allocation(self) -> None:
-        s = ScoredStock(
-            ticker="A", name="A", sector="Tech", current_price=100.0,
-            technical_score=70, fundamental_score=80, sentiment_score=60,
-            composite_score=70.0, recommendation="Buy",
-        )
+        s = _buyable("A", 70.0)
         compute_position_sizes([s], 0.0)
         assert s.suggested_amount == 0.0
 
     def test_suggested_shares_computed(self) -> None:
-        s = ScoredStock(
-            ticker="A", name="A", sector="Tech", current_price=100.0,
-            technical_score=70, fundamental_score=80, sentiment_score=60,
-            composite_score=70.0, recommendation="Buy",
-        )
+        from portfolio.loader import MAX_POSITION_FRACTION
+
+        s = _buyable("A", 70.0)
         compute_position_sizes([s], 500.0)
-        assert s.suggested_shares == pytest.approx(5.0, abs=0.01)
+        expected_shares = 500.0 * MAX_POSITION_FRACTION / 100.0
+        assert s.suggested_shares == pytest.approx(expected_shares, abs=0.01)
 
 
 class TestAccountPlacement:

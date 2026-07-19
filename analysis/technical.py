@@ -6,24 +6,50 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, ADXIndicator, SMAIndicator
 from ta.volatility import BollingerBands
 
+from analysis.xsection import (
+    MOMENTUM_LOOKBACK_BARS,
+    MOMENTUM_SKIP_BARS,
+    FactorStats,
+    blend_with_percentile,
+    compute_momentum_12_1,
+)
 from data.models import ScoreResult
 
 _WEIGHTS = {
-    "rsi": 0.20,
-    "macd": 0.25,
+    "momentum": 0.25,
+    "macd": 0.20,
+    "rsi": 0.15,
+    "sma": 0.15,
     "bb": 0.10,
-    "sma": 0.20,
-    "adx": 0.10,
-    "volume": 0.15,
+    "volume": 0.10,
+    "adx": 0.05,
 }
+
+# 12-1 momentum: return from 12 months ago to 1 month ago. The most recent
+# month is skipped because of short-term reversal (last month's winners tend
+# to give some back); 252/21 trading bars ≈ 12/1 calendar months.
+_MOMENTUM_LOOKBACK_BARS = MOMENTUM_LOOKBACK_BARS
+_MOMENTUM_SKIP_BARS = MOMENTUM_SKIP_BARS
 
 # Below this fraction of available indicator weight, a technical score would
 # rest on too little signal — return neutral instead of pretending confidence.
 _MIN_AVAILABLE_WEIGHT = 0.4
 
+# Realized volatility: annualized std of daily returns over ~3 months
+_VOL_WINDOW_BARS = 63
+_VOL_MIN_OBSERVATIONS = 20
+
 
 def _nan_to_none(value: float) -> float | None:
     return None if np.isnan(value) else float(value)
+
+
+def compute_realized_vol(close: pd.Series) -> float | None:
+    """Annualized std of the last ~3 months of daily returns."""
+    daily_returns = close.pct_change().iloc[-_VOL_WINDOW_BARS:].dropna()
+    if len(daily_returns) < _VOL_MIN_OBSERVATIONS:
+        return None
+    return float(daily_returns.std() * np.sqrt(252))
 
 
 def compute_indicators(df: pd.DataFrame) -> dict[str, float | str | None]:
@@ -69,6 +95,8 @@ def compute_indicators(df: pd.DataFrame) -> dict[str, float | str | None]:
         macd_direction = "bullish" if macd_hist > macd_hist_prev else "bearish"
 
     return {
+        "mom_12_1": compute_momentum_12_1(close),
+        "realized_vol": compute_realized_vol(close),
         "rsi": rsi,
         "macd_line": macd_line,
         "macd_signal": macd_signal,
@@ -199,7 +227,28 @@ def _score_volume(vol_ratio: float, bullish: bool | None, reasons: list[str]) ->
     return 20.0
 
 
-def score_technical(indicators: dict[str, float | str | None]) -> ScoreResult:
+def score_momentum(mom: float, reasons: list[str] | None = None) -> float:
+    """Score 12-1 momentum with monotonic bands — it's a continuation signal,
+    unlike RSI's mean-reversion bands."""
+    if mom > 0.30:
+        score, label = 90.0, "strong relative strength"
+    elif mom > 0.10:
+        score, label = 70.0, "solid relative strength"
+    elif mom > -0.05:
+        score, label = 50.0, "flat — no momentum edge"
+    elif mom > -0.20:
+        score, label = 30.0, "weak relative strength"
+    else:
+        score, label = 10.0, "deeply negative momentum"
+    if reasons is not None:
+        reasons.append(f"12-1 momentum {mom:+.0%} — {label}")
+    return score
+
+
+def score_technical(
+    indicators: dict[str, float | str | None],
+    factor_stats: FactorStats | None = None,
+) -> ScoreResult:
     reasons: list[str] = []
     weighted_sum = 0.0
     available_weight = 0.0
@@ -214,7 +263,19 @@ def score_technical(indicators: dict[str, float | str | None]) -> ScoreResult:
     adx = indicators["adx"]
     vol_ratio = indicators["volume_ratio"]
 
+    # .get(): older callers build indicator dicts by hand without this key
+    mom = indicators.get("mom_12_1")
+
     bullish = _is_bullish_trend(macd_line, macd_signal, sma50, sma200)  # type: ignore[arg-type]
+
+    if mom is not None:
+        mom_score = blend_with_percentile(
+            score_momentum(float(mom), reasons), "mom_12_1", float(mom), factor_stats,
+        )
+        weighted_sum += mom_score * _WEIGHTS["momentum"]
+        available_weight += _WEIGHTS["momentum"]
+    else:
+        reasons.append("12-1 momentum unavailable (needs ~13 months of history) — not scored")
 
     if rsi is not None:
         weighted_sum += _score_rsi(float(rsi), reasons) * _WEIGHTS["rsi"]

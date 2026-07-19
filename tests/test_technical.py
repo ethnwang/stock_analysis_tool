@@ -50,11 +50,21 @@ class TestComputeIndicators:
         indicators = compute_indicators(df)
 
         expected_keys = {
-            "rsi", "macd_line", "macd_signal", "macd_hist", "macd_direction",
-            "bb_pct", "bb_upper", "bb_lower", "sma50", "sma200",
-            "adx", "volume_ratio", "current_price",
+            "mom_12_1", "realized_vol", "rsi", "macd_line", "macd_signal",
+            "macd_hist", "macd_direction", "bb_pct", "bb_upper", "bb_lower",
+            "sma50", "sma200", "adx", "volume_ratio", "current_price",
         }
         assert set(indicators.keys()) == expected_keys
+
+    def test_realized_vol_annualized_and_positive(self) -> None:
+        indicators = compute_indicators(_make_ohlcv(_uptrend()))
+        assert indicators["realized_vol"] is not None
+        assert 0 < indicators["realized_vol"] < 2.0
+
+    def test_realized_vol_none_for_thin_history(self) -> None:
+        from analysis.technical import compute_realized_vol
+
+        assert compute_realized_vol(pd.Series(_uptrend(15))) is None
 
     def test_rsi_in_valid_range(self) -> None:
         df = _make_ohlcv(_uptrend())
@@ -66,6 +76,54 @@ class TestComputeIndicators:
         indicators = compute_indicators(df)
         assert indicators["sma50"] > 0
         assert indicators["sma200"] > 0
+
+
+class TestMomentum:
+    def test_computed_with_enough_history(self) -> None:
+        indicators = compute_indicators(_make_ohlcv(_uptrend(300)))
+        assert indicators["mom_12_1"] is not None
+        assert indicators["mom_12_1"] > 0
+
+    def test_unavailable_below_252_bars(self) -> None:
+        indicators = compute_indicators(_make_ohlcv(_uptrend(200)))
+        assert indicators["mom_12_1"] is None
+
+    def test_short_history_reduces_completeness_not_crash(self) -> None:
+        result = score_technical(compute_indicators(_make_ohlcv(_uptrend(200))))
+        assert result.completeness < 1.0
+        assert any("momentum unavailable" in r.lower() for r in result.reasons)
+
+    def test_skip_month_ignores_last_20_bars(self) -> None:
+        from analysis.technical import _MOMENTUM_SKIP_BARS
+
+        prices = _uptrend(300)
+        crashed = list(prices)
+        for j in range(1, _MOMENTUM_SKIP_BARS):
+            crashed[-j] = 1.0  # crash everything AFTER the skip-month boundary
+        base = compute_indicators(_make_ohlcv(prices))["mom_12_1"]
+        after = compute_indicators(_make_ohlcv(crashed))["mom_12_1"]
+        assert after == pytest.approx(base)
+
+    def test_weights_sum_to_one(self) -> None:
+        from analysis.technical import _WEIGHTS
+
+        assert sum(_WEIGHTS.values()) == pytest.approx(1.0)
+
+    def test_band_scores_are_monotonic(self) -> None:
+        from analysis.technical import score_momentum
+
+        assert score_momentum(0.50) == 90.0
+        assert score_momentum(0.20) == 70.0
+        assert score_momentum(0.00) == 50.0
+        assert score_momentum(-0.10) == 30.0
+        assert score_momentum(-0.50) == 10.0
+
+    def test_reason_appended(self) -> None:
+        from analysis.technical import score_momentum
+
+        reasons: list[str] = []
+        score_momentum(0.35, reasons)
+        assert any("12-1 momentum" in r for r in reasons)
 
 
 class TestScoreTechnical:

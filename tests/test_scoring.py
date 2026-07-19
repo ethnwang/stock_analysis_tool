@@ -111,6 +111,20 @@ class TestScoreEtfDispatch:
         assert "VOO" in tickers
 
 
+class TestComponents:
+    def test_momentum_component_recorded(self) -> None:
+        result = score_stock(make_stock(), default_config())
+        assert "momentum" in result.components
+        assert "mom_12_1" in result.components
+        assert 0 <= result.components["momentum"] <= 100
+
+    def test_short_history_omits_momentum_component(self) -> None:
+        stock = make_stock()
+        stock.price_history = stock.price_history.iloc[:100]  # < 252 bars
+        result = score_stock(stock, default_config())
+        assert "momentum" not in result.components
+
+
 class TestDataCompleteness:
     def test_full_data_has_high_completeness(self) -> None:
         stock = make_stock()
@@ -172,6 +186,18 @@ class TestDataCompleteness:
         ranked = rank_stocks([bad], config, return_all=True)
         assert len(ranked) == 1
         assert ranked[0].insufficient_data
+
+    def test_completeness_keeps_original_weights_when_pillars_drop(self) -> None:
+        # The composite renormalizes over active pillars, but completeness
+        # deliberately keeps the ORIGINAL weights: a stock scored on the
+        # fundamental pillar alone must report only that pillar's weight as
+        # completeness, so it can't slip past the min_data_completeness gate.
+        stock = make_stock()
+        stock.price_history = stock.price_history.iloc[:10]  # technical dropped
+        config = default_config()  # no news — sentiment dropped too
+        result = score_stock(stock, config)
+
+        assert result.data_completeness == pytest.approx(config.weight_fundamental)
 
     def test_technical_pillar_dropped_renormalizes_composite(self) -> None:
         stock = make_stock()

@@ -18,7 +18,9 @@ class Config:
     finnhub_api_key: str = ""
     universe: str = "watchlist"
     top_n: int = 10
-    lookback_days: int = 365
+    # ~420 calendar days ≈ 290 trading bars — enough for the 252-bar 12-1
+    # momentum window (365 days ≈ 250 bars falls one short)
+    lookback_days: int = 420
     weight_technical: float = 0.45
     weight_fundamental: float = 0.45
     weight_sentiment: float = 0.10
@@ -26,6 +28,9 @@ class Config:
     min_market_cap: float = 300_000_000
     min_data_completeness: float = 0.5
     risk_profile: str = "moderate"
+    # "lexicon" (built-in keywords) or "finbert" (needs the finbert extra);
+    # unavailable backends fall back to lexicon with a warning
+    sentiment_backend: str = "lexicon"
     verbose: bool = False
     custom_tickers: list[str] = field(default_factory=list)
 
@@ -77,7 +82,7 @@ def load_config(
         finnhub_api_key=os.environ.get("FINNHUB_API_KEY", ""),
         universe=universe or os.environ.get("UNIVERSE", "watchlist"),
         top_n=top_n if top_n is not None else int(os.environ.get("TOP_N", "10")),
-        lookback_days=int(os.environ.get("LOOKBACK_DAYS", "365")),
+        lookback_days=int(os.environ.get("LOOKBACK_DAYS", "420")),
         weight_technical=weights[0],
         weight_fundamental=weights[1],
         weight_sentiment=weights[2],
@@ -85,6 +90,7 @@ def load_config(
         min_market_cap=float(os.environ.get("MIN_MARKET_CAP", "300000000")),
         min_data_completeness=float(os.environ.get("MIN_DATA_COMPLETENESS", "0.5")),
         risk_profile=risk_profile or os.environ.get("RISK_PROFILE", "moderate"),
+        sentiment_backend=os.environ.get("SENTIMENT_BACKEND", "lexicon"),
         verbose=verbose,
         custom_tickers=tickers or [],
         schwab_client_id=os.environ.get("SCHWAB_CLIENT_ID", ""),

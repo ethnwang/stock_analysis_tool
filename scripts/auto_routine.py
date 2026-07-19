@@ -30,7 +30,9 @@ SNAPSHOT_CADENCE_DAYS = 6
 EVAL_CADENCE_DAYS = 28
 
 SYNC_TIMEOUT_S = 300
-ANALYZE_TIMEOUT_S = 900
+# sp500 snapshots pull ~500 names of news through the 55/min Finnhub limiter
+# (~10 min) plus prices/fundamentals — 30 min leaves headroom
+ANALYZE_TIMEOUT_S = 1800
 EVAL_TIMEOUT_S = 900
 
 _FAILURE_TAIL_LINES = 10
@@ -72,11 +74,13 @@ TASKS: list[RoutineTask] = [
         name="Score snapshot",
         state_key="last_snapshot",
         cadence_days=SNAPSHOT_CADENCE_DAYS,
-        # --no-portfolio: snapshots should record the raw scoring model,
-        # not overlap/sector-penalized values
+        # --no-portfolio: snapshots should record the raw scoring model, not
+        # overlap/sector-penalized values. sp500 (~500 names) gives ~10x the
+        # cross-section of the watchlist — far tighter IC error bars — and
+        # refreshes the factor-stats cache that watchlist runs blend against.
         command=[
             sys.executable, "main.py", "analyze",
-            "--universe", "watchlist", "--no-portfolio", "--snapshot",
+            "--universe", "sp500", "--no-portfolio", "--snapshot",
         ],
         timeout_s=ANALYZE_TIMEOUT_S,
     ),
@@ -84,7 +88,12 @@ TASKS: list[RoutineTask] = [
         name="Snapshot evaluation",
         state_key="last_eval",
         cadence_days=EVAL_CADENCE_DAYS,
-        command=[sys.executable, "main.py", "backtest", "--eval-snapshots"],
+        # --by-component: per-signal IC table (momentum, quality, sentiment, …)
+        # — the instrument that will justify any future weight changes
+        command=[
+            sys.executable, "main.py", "backtest",
+            "--eval-snapshots", "--by-component",
+        ],
         timeout_s=EVAL_TIMEOUT_S,
     ),
 ]

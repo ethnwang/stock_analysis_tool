@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from data.models import ScoreResult
+
+if TYPE_CHECKING:
+    from analysis.sentiment_backends import SentimentBackend
 
 # "revenue", "launch", "contract", "debt" are deliberately absent from the
 # keyword sets: bare mentions carry no sentiment (any earnings article says
@@ -156,24 +160,38 @@ def _recency_weight(article_datetime: str) -> float:
     return 0.5
 
 
-def score_sentiment(news: list[dict[str, str]]) -> ScoreResult:
+def score_sentiment(
+    news: list[dict[str, str]],
+    backend: SentimentBackend | None = None,
+) -> ScoreResult:
+    """Aggregate per-article sentiment into a 0-100 score.
+
+    Dedup, recency weighting, and shrinkage are backend-agnostic; only the
+    per-text (pos, neg) polarity comes from `backend` (None = built-in lexicon).
+    """
     if not news:
         return ScoreResult(
             50.0, ["No news data available — sentiment neutral"], completeness=0.0,
         )
 
     news = _dedup_articles(news)
+    texts = [
+        f"{article.get('headline', '')} {article.get('summary', '')}"
+        for article in news
+    ]
+    if backend is None:
+        pairs: list[tuple[float, float]] = [
+            (float(p), float(n)) for p, n in (_analyze_text(t) for t in texts)
+        ]
+    else:
+        pairs = backend.classify(texts)
 
     total_pos = 0.0
     total_neg = 0.0
     notable: list[str] = []
 
-    for article in news:
+    for article, (pos, neg) in zip(news, pairs):
         headline = article.get("headline", "")
-        summary = article.get("summary", "")
-        text = f"{headline} {summary}"
-
-        pos, neg = _analyze_text(text)
         weight = _recency_weight(article.get("datetime", ""))
 
         total_pos += pos * weight
@@ -196,10 +214,11 @@ def score_sentiment(news: list[dict[str, str]]) -> ScoreResult:
     # Laplace-smoothed ratio: shrinks toward 50 when signal counts are low
     score = (total_pos + _SHRINKAGE_K) / (total + 2 * _SHRINKAGE_K) * 100.0
 
+    backend_note = f", {backend.name} backend" if backend is not None else ""
     reasons = [
         f"News sentiment: {total_pos:.0f} positive vs {total_neg:.0f} negative "
         f"signals across {len(news)} unique articles (recency-weighted, "
-        f"low-count shrinkage applied)"
+        f"low-count shrinkage applied{backend_note})"
     ]
     reasons.extend(notable[:5])
 

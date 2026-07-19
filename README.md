@@ -76,6 +76,35 @@ Import holdings from a Fidelity portfolio positions CSV export.
 python3 main.py import path/to/Portfolio_Positions.csv
 ```
 
+### `backtest` — Validate scores against realized returns
+
+```bash
+python3 main.py backtest --universe watchlist              # As-of technical backtest (3y)
+python3 main.py backtest --ticker AAPL MSFT NVDA JPM       # Specific tickers
+python3 main.py backtest --eval-snapshots                  # Composite vs realized returns
+python3 main.py backtest --eval-snapshots --by-component   # Per-signal IC table
+```
+
+Reports per-date Spearman rank IC (mean ± std, t-stat, hit-rate) and mean
+forward return per score quintile, excess of SPY when benchmark data is
+available. `analyze --snapshot` appends the scored cross-section (including
+per-signal components) to `snapshots/scores.jsonl`; once snapshots are ≥21
+days old, `--eval-snapshots` measures whether the scores actually predicted
+returns — the survivorship-free validation path.
+
+**Weight retuning policy** — pillar weights change only on snapshot-IC
+evidence (≥3–5 evaluable snapshot dates from `--by-component`), never by
+feel:
+
+- Technical IC t-stat ≤ 0 across horizons → cut `WEIGHT_TECHNICAL` to ~0.25,
+  redistribute to fundamental
+- Sentiment IC ≈ 0 → cut `WEIGHT_SENTIMENT` to ~0.10
+- Momentum component IC ≥ 0.05 while other technical components stay ≤ 0 →
+  raise momentum's share inside `analysis/technical.py:_WEIGHTS` (or promote
+  it to its own pillar)
+- Re-check the 80/65/45 recommendation cutoffs against fresh snapshot
+  cross-sections after any scoring change
+
 ## How It Works
 
 ### Data Flow
@@ -109,29 +138,34 @@ Default weights: 45% technical, 45% fundamental, 10% sentiment. Configurable via
 | 45–64 | Hold |
 | < 45  | Avoid |
 
-**Technical scoring** uses six indicators: MACD, RSI, SMA 50/200 crossover, volume, ADX, and Bollinger Bands. Direction-aware — a strong bullish trend with high volume scores higher than a strong bearish trend with high volume.
+**Technical scoring** uses seven indicators: 12-1 momentum (25%), MACD (20%), RSI (15%), SMA 50/200 crossover (15%), Bollinger Bands (10%), volume (10%), and ADX (5%). Momentum is the 12-month return excluding the most recent month (the standard skip-month construction, avoiding short-term reversal). Direction-aware — a strong bullish trend with high volume scores higher than a strong bearish trend with high volume.
 
-**Fundamental scoring** evaluates P/E ratio, EPS growth, revenue growth, debt-to-equity, and dividend yield. Weights shift by risk profile (aggressive favors growth metrics, conservative favors dividends and low debt). ETFs are automatically detected and scored on expense ratio, blended returns, category performance, concentration, AUM, and yield instead.
+**Fundamental scoring** evaluates valuation (trailing P/E, with a labeled forward-P/E fallback), growth (EPS, revenue), balance sheet (D/E), income (dividend yield), and quality (ROE, margins, FCF yield). Weights shift by risk profile. P/E, D/E, and gross margin are scored relative to sector medians when enough peers are in the batch. ETFs are automatically detected and scored on expense ratio, blended returns, category performance, concentration, AUM, and yield instead.
 
-**Sentiment scoring** analyzes news headlines using keyword/phrase matching with recency weighting (last 24h counts 2x). No news = neutral (50).
+**Sentiment scoring** analyzes news headlines with recency weighting (last 24h counts 2x) and low-count shrinkage. The polarity backend is pluggable via `SENTIMENT_BACKEND`: the keyword lexicon (default, zero dependencies) or FinBERT (local model, much higher accuracy). Batch-median recentering removes the lexicon's positive skew. No news = neutral (50).
+
+**Cross-sectional normalization** blends each factor's absolute band score with its percentile in the analyzed universe (50/50 at full S&P 500 breadth). S&P 500 runs cache universe-wide decile breakpoints (`data/cache/factor_stats.json`, 30-day staleness) so watchlist runs blend against the full-universe distribution instead of a 48-name batch.
 
 ### Risk Profiles
 
 | Metric | Aggressive | Moderate | Conservative |
 |--------|-----------|----------|-------------|
-| P/E ratio | 10% | 25% | 30% |
-| EPS growth | 35% | 25% | 15% |
-| Revenue growth | 30% | 20% | 10% |
-| D/E ratio | 10% | 15% | 20% |
-| Dividend yield | 15% | 15% | 25% |
+| P/E ratio | 10% | 20% | 25% |
+| EPS growth | 25% | 15% | 5% |
+| Revenue growth | 25% | 15% | 5% |
+| D/E ratio | 5% | 10% | 15% |
+| Dividend yield | 5% | 10% | 20% |
+| ROE | 10% | 10% | 10% |
+| Margins | 10% | 10% | 10% |
+| FCF yield | 10% | 10% | 10% |
 
 ### Portfolio-Aware Features
 
 When `portfolio.json` is present:
 
-- **Overlap penalty** — -5 points for stocks you already hold (waived for Strong Buy conviction >80)
+- **Overlap penalty** — up to -5 points for stocks you already hold, tapering linearly from full at composite ≤65 to zero at ≥80 (no rank cliff at the Strong Buy cutoff)
 - **Sector diversification** — -3 points for stocks in sectors >30% of portfolio value
-- **Position sizing** — Monthly budget split proportionally by composite score across recommended picks
+- **Position sizing** — Monthly budget split by conviction × inverse-volatility (calmer names get more at equal score; scalar clamped to 0.5–2.0), with no position above 35% of the monthly budget
 - **Account placement** — Suggests Roth IRA (high-growth) or Brokerage (dividends, shorter-term) per stock
 
 ### Account Analysis & Swap Suggestions
@@ -152,11 +186,12 @@ All settings via `.env`:
 | `FINNHUB_API_KEY` | — | Finnhub API key for news/sentiment |
 | `UNIVERSE` | `watchlist` | Default stock universe |
 | `TOP_N` | `10` | Number of top picks |
-| `LOOKBACK_DAYS` | `365` | Price history window |
+| `LOOKBACK_DAYS` | `420` | Price history window (~290 trading bars; 12-1 momentum needs 252) |
 | `WEIGHT_TECHNICAL` | `0.45` | Technical analysis weight |
 | `WEIGHT_FUNDAMENTAL` | `0.45` | Fundamental analysis weight |
 | `WEIGHT_SENTIMENT` | `0.10` | Sentiment analysis weight |
 | `RISK_PROFILE` | `moderate` | Scoring risk profile |
+| `SENTIMENT_BACKEND` | `lexicon` | `lexicon` or `finbert` (falls back to lexicon if unavailable) |
 | `MIN_PRICE` | `5.0` | Minimum stock price filter |
 | `MIN_MARKET_CAP` | `300000000` | Minimum market cap ($300M) |
 | `SCHWAB_CLIENT_ID` | — | Schwab API client ID |

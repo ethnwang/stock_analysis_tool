@@ -7,7 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import data.universe as universe_mod
-from data.universe import DEFAULT_ETF_WATCHLIST, _SP500_FALLBACK, get_sp500_tickers, get_universe
+from data.universe import (
+    DEFAULT_ETF_WATCHLIST,
+    _SP500_FALLBACK,
+    _fetch_sp500_wikipedia,  # bound before the autouse no-network patch
+    get_sp500_tickers,
+    get_universe,
+)
 from tests.conftest import default_config
 
 
@@ -26,6 +32,12 @@ def _mock_finnhub_module(mock_client: MagicMock) -> MagicMock:
 @pytest.fixture(autouse=True)
 def _isolated_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_mod, "_SP500_CACHE_PATH", tmp_path / "sp500.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_network_wikipedia(monkeypatch):
+    """Fallback tests must not hit Wikipedia; specific tests override this."""
+    monkeypatch.setattr(universe_mod, "_fetch_sp500_wikipedia", lambda: None)
 
 
 class TestGetSp500Tickers:
@@ -95,6 +107,63 @@ class TestGetSp500Tickers:
         )
         result = get_sp500_tickers("")
         assert result == cached
+
+    def test_wikipedia_used_before_cache_and_writes_it(self, monkeypatch) -> None:
+        wiki = sorted(f"WIKI{i}" for i in range(500))
+        monkeypatch.setattr(universe_mod, "_fetch_sp500_wikipedia", lambda: wiki)
+
+        result = get_sp500_tickers("")  # no Finnhub key
+        assert result == wiki
+        payload = json.loads(universe_mod._SP500_CACHE_PATH.read_text())
+        assert payload["tickers"] == wiki
+
+
+class TestWikipediaFetch:
+    @staticmethod
+    def _fake_response(html: str):
+        class _Resp:
+            text = html
+
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+        return _Resp()
+
+    def test_parses_symbol_table_and_maps_dots(self, monkeypatch) -> None:
+        rows = "".join(
+            f"<tr><td>SYM{i}</td><td>Some Co</td></tr>" for i in range(450)
+        )
+        html = (
+            "<table><thead><tr><th>Symbol</th><th>Security</th></tr></thead>"
+            f"<tbody><tr><td>BRK.B</td><td>Berkshire</td></tr>{rows}</tbody></table>"
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda url, timeout, headers: self._fake_response(html),
+        )
+        tickers = _fetch_sp500_wikipedia()
+        assert tickers is not None
+        assert len(tickers) == 451
+        assert "BRK-B" in tickers  # Yahoo-style symbol, not Wikipedia's BRK.B
+
+    def test_small_table_rejected(self, monkeypatch) -> None:
+        html = (
+            "<table><thead><tr><th>Symbol</th></tr></thead>"
+            "<tbody><tr><td>AAPL</td></tr></tbody></table>"
+        )
+        monkeypatch.setattr(
+            "requests.get", lambda url, timeout, headers: self._fake_response(html),
+        )
+        assert _fetch_sp500_wikipedia() is None
+
+    def test_network_error_returns_none(self, monkeypatch) -> None:
+        import requests
+
+        def _boom(url, timeout, headers):
+            raise requests.ConnectionError("offline")
+
+        monkeypatch.setattr("requests.get", _boom)
+        assert _fetch_sp500_wikipedia() is None
 
 
 class TestGetUniverseEtf:

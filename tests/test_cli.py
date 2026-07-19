@@ -121,6 +121,13 @@ class TestBacktestCommand:
     def test_backtest_eval_snapshots(self) -> None:
         args = build_parser().parse_args(["backtest", "--eval-snapshots"])
         assert args.eval_snapshots is True
+        assert args.by_component is False
+
+    def test_backtest_eval_by_component(self) -> None:
+        args = build_parser().parse_args(
+            ["backtest", "--eval-snapshots", "--by-component"]
+        )
+        assert args.by_component is True
 
     def test_snapshot_flag_on_analyze(self) -> None:
         args = build_parser().parse_args(["analyze", "--snapshot"])

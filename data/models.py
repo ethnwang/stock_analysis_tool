@@ -65,3 +65,9 @@ class ScoredStock:
 
     data_completeness: float = 1.0
     insufficient_data: bool = False
+
+    # Annualized std of daily returns (last ~3 months); None when history is thin
+    realized_vol: float | None = None
+
+    # Raw sub-signal scores (momentum, quality, …) for snapshot evaluation
+    components: dict[str, float] = field(default_factory=dict)

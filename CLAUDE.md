@@ -51,11 +51,13 @@ main.py (CLI — analyze, sync, link, import subcommands)
   → data/universe.py (resolves ticker list — 48-stock watchlist, S&P 500, or 35-ETF watchlist)
   → data/fetcher.py (yahooquery for price/fundamentals, Finnhub + Yahoo RSS for news, rate limiters)
   → data/models.py (StockData, ScoredStock, SwapSuggestion)
-  → analysis/technical.py (RSI, MACD, Bollinger Bands, SMA crossover, ADX, volume — direction-aware)
-  → analysis/fundamental.py (P/E, EPS growth, revenue growth, D/E, dividend yield — risk-adjusted)
+  → analysis/technical.py (12-1 momentum, RSI, MACD, Bollinger Bands, SMA crossover, ADX, volume, realized vol — direction-aware)
+  → analysis/fundamental.py (P/E, EPS growth, revenue growth, D/E, dividend yield, ROE, margins, FCF yield — risk-adjusted)
   → analysis/etf_fundamental.py (expense ratio, returns, concentration, AUM, yield — risk-adjusted)
-  → analysis/sentiment.py (keyword/phrase-based news scoring, recency-weighted)
-  → scoring/engine.py (composite scoring, overlap penalty, sector diversification, account placement)
+  → analysis/sentiment.py (news scoring aggregation — dedup, recency weighting, shrinkage)
+  → analysis/sentiment_backends.py (pluggable polarity backends: lexicon default, FinBERT optional)
+  → analysis/xsection.py (cross-sectional factor percentiles, factor-stats cache, sentiment recentering)
+  → scoring/engine.py (composite scoring, overlap penalty taper, sector diversification, account placement)
   → reporting/console.py (full report + account-specific report with swap suggestions)
   → integrations/schwab.py (Schwab API — OAuth, account positions)
   → integrations/plaid_sync.py (Plaid API — Chase/Fidelity account balances and holdings)
@@ -70,7 +72,7 @@ Data flows: Config → Portfolio (optional) → Universe → Fetch → Analyze �
 
 **yahooquery** (no API key needed): Price history (OHLCV), fundamentals (P/E, EPS, revenue, debt-to-equity, dividend yield), current quotes, company profile (sector, name). Uses `finance.yahoo.com` for cookie bootstrapping instead of the often-blocked `fc.yahoo.com`. Set `YF_SETUP_URL` env var to override the bootstrap URL if needed.
 
-**Finnhub** (free tier, 60 calls/min): Company news (last 7 days), S&P 500 index constituents. Register at https://finnhub.io for a free API key. Set `FINNHUB_API_KEY` in `.env`. The key is validated via `config.has_finnhub` — placeholder values like `"your_key_here"` are treated as unconfigured. If Finnhub is unavailable or returns no articles, news falls back to **Yahoo Finance RSS** (`feeds.finance.yahoo.com/rss/2.0/headline`).
+**Finnhub** (free tier, 60 calls/min): Company news (last 7 days). Register at https://finnhub.io for a free API key. Set `FINNHUB_API_KEY` in `.env`. The key is validated via `config.has_finnhub` — placeholder values like `"your_key_here"` are treated as unconfigured. If Finnhub is unavailable or returns no articles, news falls back to **Yahoo Finance RSS** (`feeds.finance.yahoo.com/rss/2.0/headline`). Note: Finnhub's index-constituents endpoint is premium-tier, so S&P 500 membership resolves Finnhub → **Wikipedia** (List of S&P 500 companies table, ~503 names, BRK.B→BRK-B symbol mapping) → 90-day cache → hardcoded ~100-name mega-cap fallback (`data/universe.py`).
 
 **Yahoo Finance RSS** (no API key needed): Fallback news source. Fetches headlines via RSS feed with a `User-Agent` header. Used automatically when Finnhub is not configured or returns empty results.
 
@@ -149,11 +151,12 @@ All settings via `.env` file (see `.env.example`):
 | `FINNHUB_API_KEY` | (none) | Finnhub API key for news/sentiment |
 | `UNIVERSE` | `watchlist` | `watchlist` (48 stocks), `sp500` (~500 stocks), or `etf` (35 ETFs) |
 | `TOP_N` | `10` | Number of top picks to display |
-| `LOOKBACK_DAYS` | `365` | Price history window |
-| `WEIGHT_TECHNICAL` | `0.45` | Technical analysis weight |
-| `WEIGHT_FUNDAMENTAL` | `0.45` | Fundamental analysis weight |
-| `WEIGHT_SENTIMENT` | `0.10` | Sentiment analysis weight (keyword-based, lower default) |
+| `LOOKBACK_DAYS` | `420` | Price history window (~290 trading bars — 12-1 momentum needs 252) |
+| `WEIGHT_TECHNICAL` | `0.45` | Technical analysis weight (live `.env` currently runs 0.40) |
+| `WEIGHT_FUNDAMENTAL` | `0.45` | Fundamental analysis weight (live `.env` currently runs 0.40) |
+| `WEIGHT_SENTIMENT` | `0.10` | Sentiment analysis weight (live `.env` currently runs 0.20) |
 | `RISK_PROFILE` | `moderate` | `aggressive`, `moderate`, or `conservative` |
+| `SENTIMENT_BACKEND` | `lexicon` | `lexicon` or `finbert`; unavailable backends fall back to lexicon with a warning |
 | `MIN_PRICE` | `5.0` | Minimum stock price filter |
 | `MIN_MARKET_CAP` | `300000000` | Minimum market cap ($300M) |
 | `MIN_DATA_COMPLETENESS` | `0.5` | Below this weighted data-completeness fraction, a stock is excluded as "Insufficient Data" |
@@ -167,6 +170,8 @@ All settings via `.env` file (see `.env.example`):
 | `PLAID_ACCESS_TOKEN_FIDELITY` | (none) | Plaid access token for Fidelity (not available via Plaid) |
 
 Weights are auto-normalized if they don't sum to 1.0. If all weights are zero, they reset to defaults (0.45, 0.45, 0.10).
+
+**Weight retuning is evidence-gated**: pillar/sub-weights only change when `backtest --eval-snapshots --by-component` shows it (≥3–5 evaluable snapshot dates). Decision rules live in README.md under the backtest command.
 
 ## Scoring System
 
@@ -184,7 +189,13 @@ At the engine level, pillars (technical/fundamental/sentiment) with zero complet
 
 ### Sector-Relative Valuation
 
-`rank_stocks` builds per-sector medians (P/E, D/E, EPS growth, revenue growth) from the fetched batch (`analysis/relative.py`). With ≥5 sector peers, P/E and D/E are banded on ratio-to-sector-median (≤0.6 → 100 … >1.5 → 10) with reasons citing both values; growth keeps absolute bands plus a clamped ±10 adjustment vs the median. Below 5 peers, for Unknown sectors, ETFs, or negative P/E, the absolute bands apply. Medians are **batch-relative**: meaningful for `--universe sp500`, mostly falls back on the 48-name watchlist.
+`rank_stocks` builds per-sector medians (P/E, D/E, EPS growth, revenue growth, gross margin, ROE) from the fetched batch (`analysis/relative.py`). With ≥5 sector peers, P/E and D/E are banded on ratio-to-sector-median (≤0.6 → 100 … >1.5 → 10) with reasons citing both values; gross margin is banded on the spread vs the median; growth keeps absolute bands plus a clamped ±10 adjustment vs the median. Below 5 peers, for Unknown sectors, ETFs, or negative P/E, the absolute bands apply. Medians are **batch-relative**: meaningful for `--universe sp500`, mostly falls back on the 48-name watchlist.
+
+### Cross-Sectional Normalization (`analysis/xsection.py`)
+
+Absolute bands ignore market regime and compress scores toward the middle, so band scores for momentum, P/E, ROE, gross margin, and FCF yield are **blended with the stock's percentile** in the analyzed universe. Decile breakpoints per factor are built from the batch; the percentile leg's share ramps from 0 at n≤20 to 50% at n≥100 stocks. S&P 500 runs save the breakpoints to `data/cache/factor_stats.json` (30-day staleness), and smaller runs (watchlist, `--ticker`) blend against that cached full-universe distribution instead of their own thin batch. P/E percentiles are inverted (cheap = good) and negative P/Es are excluded. ETFs are never blended against stock breakpoints.
+
+Sentiment is **recentered on the batch median** (mapped to 50) to remove the lexicon's positive skew; the raw score is preserved in `components["sentiment_raw"]`. During the transition, `components["composite_pre_xs"]` records the composite under the pre-normalization formula so the snapshot evaluation series stays comparable.
 
 ### Risk Profiles
 
@@ -192,32 +203,49 @@ The `RISK_PROFILE` setting adjusts fundamental scoring weights:
 
 | Metric | Aggressive | Moderate | Conservative |
 |--------|-----------|----------|-------------|
-| P/E ratio | 10% | 25% | 30% |
-| EPS growth | 35% | 25% | 15% |
-| Revenue growth | 30% | 20% | 10% |
-| D/E ratio | 10% | 15% | 20% |
-| Dividend yield | 15% | 15% | 25% |
+| P/E ratio | 10% | 20% | 25% |
+| EPS growth | 25% | 15% | 5% |
+| Revenue growth | 25% | 15% | 5% |
+| D/E ratio | 5% | 10% | 15% |
+| Dividend yield | 5% | 10% | 20% |
+| ROE | 10% | 10% | 10% |
+| Margins | 10% | 10% | 10% |
+| FCF yield | 10% | 10% | 10% |
 
 Aggressive mode also relaxes P/E penalties for growth stocks (P/E 20-50 penalized less).
 
+**Quality metrics**: ROE and FCF yield use absolute bands; margins use the gross-margin spread vs sector median when ≥5 peers, else absolute profit-margin bands, else skipped (absolute gross-margin bands would be sector noise). The equal-weighted quality mean is tracked in `components["quality"]`.
+
+**P/E basis**: `pe_ratio` is trailing-only; forward P/E is stored separately (`forward_pe`) and used as an explicitly-labeled fallback on absolute bands when trailing is missing — mixing bases would corrupt sector medians.
+
 ### Technical Scoring
 
-Six indicators with direction-aware scoring:
+Seven indicators with direction-aware scoring:
 
 | Indicator | Weight | Direction-Aware |
 |-----------|--------|-----------------|
-| MACD | 25% | Yes — bullish crossover with rising momentum scores higher than simple above-signal |
-| RSI | 20% | No — pure momentum oscillator |
-| SMA 50/200 | 20% | No — golden/death cross detection |
-| Volume | 15% | Yes — high volume confirms current trend direction (bullish or bearish) |
-| ADX | 10% | Yes — strong trend scored bullish/bearish based on MACD + SMA signals |
+| 12-1 Momentum | 25% | Monotonic — return from 12 months ago to 1 month ago (skip-month avoids short-term reversal); needs 252 bars |
+| MACD | 20% | Yes — bullish crossover with rising momentum scores higher than simple above-signal |
+| RSI | 15% | No — pure momentum oscillator |
+| SMA 50/200 | 15% | No — golden/death cross detection |
 | Bollinger Bands | 10% | No — position within bands |
+| Volume | 10% | Yes — high volume confirms current trend direction (bullish or bearish) |
+| ADX | 5% | Yes — strong trend scored bullish/bearish based on MACD + SMA signals |
 
 ADX and volume check `_is_bullish_trend()` (MACD above signal + SMA 50 above 200) to determine whether a strong trend or high volume is bullish or bearish. A strong bearish trend with high volume scores low; a strong bullish trend with high volume scores high.
 
+`compute_indicators` also produces `realized_vol` (annualized std of the last 63 daily returns) — not scored, but used for inverse-vol position sizing and tracked in `components`.
+
 ### Sentiment Scoring
 
-Keyword and phrase-based analysis of news headlines and summaries. Two-tier matching:
+The aggregation pipeline (dedup, recency weighting, shrinkage) is backend-agnostic; per-text polarity comes from a pluggable backend (`analysis/sentiment_backends.py`, selected by `SENTIMENT_BACKEND`):
+
+- **lexicon** (default, zero deps) — keyword/phrase matching described below
+- **finbert** (optional extra) — ProsusAI/finbert via transformers, much higher accuracy. Install: `pip3 install torch --index-url https://download.pytorch.org/whl/cpu && pip3 install transformers`. Any load failure falls back to lexicon with a warning (cron never hard-fails). Confident classifications are scaled to phrase-match units (2 pts).
+
+In batch runs (`rank_stocks`), sentiment scores are recentered on the batch median (see Cross-Sectional Normalization).
+
+The lexicon backend uses two-tier matching:
 
 1. **Phrases** (2 points each): "beat estimates", "raised guidance", "fda approval", "analyst downgrade", "earnings miss", etc. Matched first; constituent words are excluded from keyword matching to avoid double-counting.
 2. **Keywords** (1 point each): "bullish", "outperform", "surge", "bearish", "lawsuit", "plunge", etc.
@@ -253,9 +281,9 @@ Data sources: yahooquery `fund_profile` (expense ratio, category), `fund_perform
 
 When `portfolio.json` exists, the scoring engine applies:
 
-- **Overlap penalty**: -5 points for stocks already held (waived for Strong Buy conviction scores >80)
+- **Overlap penalty**: up to -5 points for stocks already held, tapering linearly from full at composite ≤65 to zero at ≥80 (no rank cliff at the Strong Buy cutoff)
 - **Sector diversification**: -3 points for stocks in sectors >30% of portfolio value
-- **Position sizing**: Monthly investment budget split proportionally by composite score across Buy/Strong Buy picks
+- **Position sizing**: Monthly budget split by conviction (`max(composite − 45, 1)`) × inverse-vol scalar (`clamp(median_vol / stock_vol, 0.5, 2.0)`; missing vol = neutral 1.0), with a per-position cap of 35% of the monthly budget (`MAX_POSITION_FRACTION`); capped excess redistributes to uncapped names, or stays unallocated if everything caps
 - **Account placement**: Suggests Roth IRA (high-growth, low-dividend, tax-free compounding) or Brokerage (dividends, shorter-term holds, flexibility) per stock. When `roth_ira_maxed` is true, all suggestions route to Brokerage.
 
 ## Account-Specific Analysis (`--account`)
@@ -329,8 +357,10 @@ When `roth_ira_maxed` is `true` in `portfolio.json` and analyzing the Roth accou
 
 1. Add the computation in `analysis/technical.py:compute_indicators()` using the `ta` library
 2. Add scoring logic in `score_technical()` with appropriate weight
-3. Adjust existing weights in `_WEIGHTS` dict to sum to 1.0
+3. Adjust existing weights in `_WEIGHTS` dict to sum to 1.0 (there's a test for this)
 4. Add a test case in `tests/test_technical.py`
+5. To track the signal's standalone predictive power, record it in `ScoredStock.components` in `scoring/engine.py:score_stock` — it flows into snapshots automatically and appears in `backtest --eval-snapshots --by-component`
+6. To make it cross-sectionally normalized, add it to `FACTOR_DIRECTIONS` in `analysis/xsection.py` and blend via `blend_with_percentile`
 
 ### Adding a New Data Source
 
@@ -358,9 +388,11 @@ Swap thresholds are in `portfolio/loader.py` (`WEAK_THRESHOLD = 50.0`, `MIN_SWAP
 
 ## Known Limitations
 
-- Sentiment is keyword/phrase-based, not ML — works for obvious signals, misses nuance and sarcasm
-- Backtesting covers the technical pillar only — fundamentals/sentiment aren't available as-of historical dates; composite validation accrues through `--snapshot` history over time
-- Sector-relative valuation is batch-relative — small universes (watchlist) mostly fall back to absolute bands
+- Default sentiment is keyword/phrase-based — set `SENTIMENT_BACKEND=finbert` (after installing the extra) for model-based accuracy; recentering fixes the lexicon's skew but not its blindness to nuance
+- Backtesting covers the technical pillar only and is survivorship-biased (universes are today's constituents; delisted names are absent) — snapshot evaluation is the survivorship-free path, but it needs history to accumulate
+- Backtest t-stats are upper bounds when forward windows overlap (step < horizon) — per-date ICs are autocorrelated
+- Sector-relative valuation is batch-relative — small universes (watchlist) mostly fall back to absolute bands (cross-sectional percentiles use the cached sp500 stats instead)
+- Pillar weights and band cutoffs remain hand-set until snapshot IC evidence accumulates (see the retuning policy in README.md)
 - No options or derivatives data
 - yahooquery uses unofficial Yahoo Finance endpoints — can break if Yahoo changes their API
 - Yahoo RSS feed (`feeds.finance.yahoo.com`) is an unofficial endpoint and may also break
@@ -376,8 +408,8 @@ Swap thresholds are in `portfolio/loader.py` (`WEAK_THRESHOLD = 50.0`, `MIN_SWAP
 | Task | Cadence | Command |
 |------|---------|---------|
 | Schwab sync | every 6 days | `sync --schwab-only` (also keeps the OAuth refresh token alive — it expires after ~7 days of inactivity) |
-| Score snapshot | every 6 days | `analyze --universe watchlist --no-portfolio --snapshot` (raw model scores, no portfolio penalties) |
-| Snapshot evaluation | every 28 days | `backtest --eval-snapshots` |
+| Score snapshot | every 6 days | `analyze --universe sp500 --no-portfolio --snapshot` (raw model scores; ~500-name cross-section for tight IC error bars; also refreshes the factor-stats cache; ~15-25 min through the Finnhub limiter, 30-min timeout) |
+| Snapshot evaluation | every 28 days | `backtest --eval-snapshots --by-component` (per-signal IC table) |
 
 Results are appended to the Obsidian vault note `Notes/Projects/StockBot/StockBot Automation Log.md` (✅/❌ status lines; full report for evaluations). Failures don't update state, so they retry the next day. **Plaid is never called** (limited API quota); Fidelity remains manual CSV import.
 
@@ -396,11 +428,12 @@ python3 main.py backtest --ticker AAPL MSFT NVDA JPM --years 3   # as-of technic
 python3 main.py backtest --universe watchlist                    # backtest the watchlist
 python3 main.py analyze --snapshot                               # append scores to snapshots/scores.jsonl
 python3 main.py backtest --eval-snapshots                        # validate accumulated snapshots vs realized returns
+python3 main.py backtest --eval-snapshots --by-component         # per-signal IC table (momentum, quality, ...)
 ```
 
-The `backtest` subcommand (`backtest/engine.py`) scores each ticker as-of historical dates using only bars up to that date (no lookahead — the input frame is sliced), then reports mean cross-sectional Spearman rank correlation between scores and 21/63-bar forward returns, plus mean forward return per score quintile. It fetches its own 3-year history (SMA200 warm-up + forward window don't fit the 365-day default). **Technical pillar only** — fundamentals and sentiment aren't available as-of past dates.
+The `backtest` subcommand (`backtest/engine.py`) scores each ticker as-of historical dates using only bars up to that date (no lookahead — the input frame is sliced), keyed by **calendar date** so tickers with different history lengths still align cross-sectionally. It reports per-horizon (21/63-bar) rank-IC statistics — mean ± std, t-stat, hit-rate, N dates — plus mean forward return per score quintile, **averaged per date then across dates**. Forward returns are **excess of SPY** over the same window when SPY data is available (within a date this shifts by a constant, so the IC is unchanged — it makes the quintile returns honest in trending markets). It fetches its own 3-year history (`_WARMUP_BARS = 252` for momentum + forward window don't fit the default lookback). **Technical pillar only** — fundamentals and sentiment aren't available as-of past dates — and survivorship-biased by construction (see caveats it prints).
 
-`analyze --snapshot` appends the full scored cross-section to `snapshots/scores.jsonl` (gitignored, one JSON object per line). After snapshots are ≥21 days old, `backtest --eval-snapshots` compares snapshot composites against realized returns — the honest way to validate the composite score over time. Snapshot the whole universe (not a 2-ticker list) so cross-sectional statistics have enough names.
+`analyze --snapshot` appends the full scored cross-section to `snapshots/scores.jsonl` (gitignored, one JSON object per line). Each record carries the pillar scores, `benchmark_price` (SPY close on snapshot day, for excess-return evaluation), and a `components` dict (momentum, quality, raw sentiment, realized vol, `composite_pre_xs`, …) — the extension seam: new factors recorded there accrue evaluation history with no schema changes, and `load_snapshots` tolerates schema evolution in both directions. After snapshots are ≥21 days old, `backtest --eval-snapshots` compares snapshot scores against realized (excess) returns — the honest way to validate the composite; `--by-component` prints the per-signal IC table that drives weight decisions. Snapshot the whole universe (not a 2-ticker list) so cross-sectional statistics have enough names; tickers that have since lost price data are counted in the caveats rather than silently dropped.
 
 ## Testing
 
@@ -408,4 +441,4 @@ The `backtest` subcommand (`backtest/engine.py`) scores each ticker as-of histor
 python3 -m pytest tests/ -v
 ```
 
-~190 tests covering technical analysis, fundamental scoring (stock and ETF), sector-relative valuation, sentiment analysis (shrinkage/negation/dedup), data completeness and exclusion, backtest statistics and snapshot round-trips, portfolio management, account placement, swap suggestions, CLI argument parsing, data fetching, and universe resolution. Tests use hardcoded data fixtures — no API calls. All analysis and scoring logic is testable offline.
+~285 tests covering technical analysis (incl. momentum and realized vol), fundamental scoring (stock, ETF, quality metrics), sector-relative valuation, cross-sectional normalization (percentiles, blending, cache), sentiment analysis (shrinkage/negation/dedup/backends), data completeness and exclusion, backtest statistics (IC t-stats, excess returns, per-date quintiles) and snapshot schema compatibility, portfolio management, vol-aware position sizing, account placement, swap suggestions, CLI argument parsing, data fetching, and universe resolution. Tests use hardcoded data fixtures — no API calls (an autouse fixture isolates the factor-stats cache). All analysis and scoring logic is testable offline.

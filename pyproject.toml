@@ -24,6 +24,13 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
+# FinBERT sentiment backend (~2GB torch + ~440MB model download). On WSL,
+# install CPU-only torch first to skip CUDA:
+#   pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+finbert = [
+    "torch>=2.0",
+    "transformers>=4.35",
+]
 
 [project.scripts]
 stockbot = "main:main"

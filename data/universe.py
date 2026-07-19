@@ -66,6 +66,44 @@ DEFAULT_ETF_WATCHLIST: list[str] = [
 ]
 
 
+_WIKIPEDIA_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+
+
+def _fetch_sp500_wikipedia() -> list[str] | None:
+    """Constituents from Wikipedia's S&P 500 table — the free fallback, since
+    Finnhub's index-constituents endpoint is premium-tier."""
+    import io
+
+    import pandas as pd
+    import requests
+
+    try:
+        resp = requests.get(
+            _WIKIPEDIA_SP500_URL,
+            timeout=30,
+            headers={"User-Agent": "stockbot/0.1 (personal research tool)"},
+        )
+        resp.raise_for_status()
+        tables = pd.read_html(io.StringIO(resp.text))
+    except (requests.RequestException, ValueError, ImportError) as exc:
+        logger.warning("Wikipedia S&P 500 fetch failed: %s", exc)
+        return None
+
+    for table in tables:
+        if "Symbol" not in table.columns:
+            continue
+        tickers = sorted({
+            # Wikipedia uses BRK.B style; Yahoo wants BRK-B
+            str(s).strip().replace(".", "-")
+            for s in table["Symbol"].tolist()
+            if isinstance(s, str) and s.strip()
+        })
+        if len(tickers) > 400:
+            return tickers
+    logger.warning("Wikipedia S&P 500 page had no parseable Symbol table")
+    return None
+
+
 def _save_cached_sp500(tickers: list[str]) -> None:
     try:
         _SP500_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +156,12 @@ def get_sp500_tickers(finnhub_api_key: str = "") -> list[str]:
                 finnhub.FinnhubAPIException, finnhub.FinnhubRequestException,
             ) as exc:
                 logger.warning("Finnhub S&P 500 fetch failed: %s", exc)
+
+    wiki = _fetch_sp500_wikipedia()
+    if wiki is not None:
+        logger.info("Using Wikipedia S&P 500 constituents (%d tickers)", len(wiki))
+        _save_cached_sp500(wiki)
+        return wiki
 
     cached = _load_cached_sp500()
     if cached is not None:

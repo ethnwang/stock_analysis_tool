@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,14 @@ class SnapshotRecord:
     price: float
     universe: str
     risk_profile: str
+    # Benchmark close on the snapshot date; 0.0 = not recorded (pre-upgrade rows)
+    benchmark_price: float = 0.0
+    # Extension seam: sub-signal scores (momentum, quality, …) land here so new
+    # factors accrue evaluation history without schema changes
+    components: dict[str, float] = field(default_factory=dict)
+
+
+_KNOWN_FIELDS = {f.name for f in fields(SnapshotRecord)}
 
 
 def append_snapshots(records: list[SnapshotRecord], path: Path = DEFAULT_SNAPSHOT_PATH) -> None:
@@ -44,7 +52,10 @@ def load_snapshots(path: Path = DEFAULT_SNAPSHOT_PATH) -> list[SnapshotRecord]:
             if not line:
                 continue
             try:
-                records.append(SnapshotRecord(**json.loads(line)))
-            except (json.JSONDecodeError, TypeError) as exc:
+                data = json.loads(line)
+                # Ignore keys from newer schema versions instead of rejecting the row
+                known = {k: v for k, v in data.items() if k in _KNOWN_FIELDS}
+                records.append(SnapshotRecord(**known))
+            except (json.JSONDecodeError, TypeError, AttributeError) as exc:
                 logger.warning("Skipping malformed snapshot line %d: %s", line_no, exc)
     return records

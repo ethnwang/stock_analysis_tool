@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import zlib
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from config import Config
 from data.models import StockData
+
+
+@pytest.fixture(autouse=True)
+def _isolate_factor_stats_cache(tmp_path, monkeypatch) -> None:
+    """Keep unit tests hermetic: never read/write the real factor-stats cache."""
+    monkeypatch.setattr(
+        "analysis.xsection.FACTOR_STATS_CACHE_PATH", tmp_path / "factor_stats.json",
+    )
 
 
 def make_stock(
@@ -16,8 +27,12 @@ def make_stock(
     rev_growth: float = 0.10,
     de_ratio: float = 0.5,
     div_yield: float = 0.02,
+    roe: float = 0.18,
+    gross_margin: float = 0.45,
+    profit_margin: float = 0.12,
+    fcf_yield: float = 0.04,
 ) -> StockData:
-    rng = np.random.default_rng(hash(ticker) % 2**32)
+    rng = np.random.default_rng(zlib.crc32(ticker.encode()))  # hash() is salted per process — tests must be deterministic
     n = 300
     prices = [100.0]
     for _ in range(n - 1):
@@ -46,6 +61,10 @@ def make_stock(
             "revenue_growth": rev_growth,
             "debt_to_equity": de_ratio,
             "dividend_yield": div_yield,
+            "roe": roe,
+            "gross_margin": gross_margin,
+            "profit_margin": profit_margin,
+            "fcf_yield": fcf_yield,
         },
         news=[],
         quote={"price": prices[-1]},
@@ -64,7 +83,7 @@ def make_etf(
     top10_concentration: float = 0.35,
     dividend_yield: float = 0.01,
 ) -> StockData:
-    rng = np.random.default_rng(hash(ticker) % 2**32)
+    rng = np.random.default_rng(zlib.crc32(ticker.encode()))  # hash() is salted per process — tests must be deterministic
     n = 300
     prices = [100.0]
     for _ in range(n - 1):

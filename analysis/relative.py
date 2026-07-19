@@ -11,7 +11,8 @@ if TYPE_CHECKING:
 # scorers fall back to absolute bands below it.
 MIN_SECTOR_PEERS = 5
 
-_METRICS = ("pe_ratio", "debt_to_equity", "eps_growth", "revenue_growth")
+_METRICS = ("pe_ratio", "debt_to_equity", "eps_growth", "revenue_growth",
+            "gross_margin", "roe")
 
 
 @dataclass(frozen=True)

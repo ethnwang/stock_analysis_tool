@@ -163,6 +163,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Evaluate accumulated analyze --snapshot history instead",
     )
     backtest_cmd.add_argument(
+        "--by-component",
+        action="store_true",
+        help="With --eval-snapshots: IC table for every recorded signal "
+             "(pillars, momentum, quality, ...)",
+    )
+    backtest_cmd.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Verbose logging",
@@ -365,12 +371,19 @@ def _run_account_analysis(args: argparse.Namespace, config: Config, portfolio: d
 
 
 def _run_backtest(args: argparse.Namespace) -> None:
-    from backtest.engine import evaluate_snapshots, run_technical_backtest
-    from reporting.console import print_backtest_report
+    from backtest.engine import (
+        evaluate_snapshot_components,
+        evaluate_snapshots,
+        run_technical_backtest,
+    )
+    from reporting.console import print_backtest_report, print_component_eval_report
 
     print("\nStockBot — Backtest", file=sys.stderr)
     print(f"{'─' * 40}", file=sys.stderr)
 
+    if args.eval_snapshots and args.by_component:
+        print_component_eval_report(evaluate_snapshot_components())
+        return
     if args.eval_snapshots:
         result = evaluate_snapshots()
     else:
@@ -385,10 +398,28 @@ def _run_backtest(args: argparse.Namespace) -> None:
     print_backtest_report(result)
 
 
+def _fetch_benchmark_close() -> float:
+    """Latest SPY close for excess-return snapshot evaluation; 0.0 on failure."""
+    from data.fetcher import fetch_price_history
+
+    try:
+        # fetch_price_history drops tickers with <20 bars, so the window must
+        # cover comfortably more than 20 trading days
+        spy = fetch_price_history(["SPY"], days=45).get("SPY")
+        if spy is not None and len(spy) > 0:
+            return float(spy["Close"].iloc[-1])
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        logger.warning("Benchmark price fetch failed: %s", exc)
+    return 0.0
+
+
 def _snapshot_scores(ranked: list, config: Config) -> None:
     from backtest.snapshots import SnapshotRecord, append_snapshots
 
     today = datetime.now(timezone.utc).date().isoformat()
+    benchmark_price = _fetch_benchmark_close()
+    if benchmark_price <= 0:
+        logger.warning("No benchmark price — snapshots will evaluate on raw returns")
     records = [
         SnapshotRecord(
             date=today,
@@ -401,6 +432,8 @@ def _snapshot_scores(ranked: list, config: Config) -> None:
             price=s.current_price,
             universe=config.universe,
             risk_profile=config.risk_profile,
+            benchmark_price=benchmark_price,
+            components=dict(s.components),
         )
         for s in ranked
     ]
@@ -421,8 +454,11 @@ def main() -> None:
         format="  %(message)s",
         stream=sys.stderr,
     )
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("finnhub").setLevel(logging.WARNING)
+    # Third-party HTTP/model libraries dump request URLs (which can contain
+    # API keys) and hub chatter at DEBUG — keep them at WARNING even under -v
+    for noisy in ("urllib3", "finnhub", "httpx", "httpcore",
+                  "huggingface_hub", "transformers", "filelock"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.command == "sync":
         config = load_config()

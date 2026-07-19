@@ -313,6 +313,36 @@ def print_account_report(
     print(f"{'=' * 90}\n")
 
 
+def print_component_eval_report(results: dict[str, Any]) -> None:
+    """IC table across every recorded signal (pillars + components)."""
+    print("\n" + "=" * 90)
+    print("  SNAPSHOT EVALUATION BY SIGNAL")
+    print("=" * 90)
+
+    print(f"\n  {'Signal':<22} {'IC mean':>9} {'± std':>8} {'t-stat':>8} "
+          f"{'hit-rate':>9} {'dates':>6} {'obs':>7}")
+    print("  " + "-" * 74)
+    for key, result in results.items():
+        ic = (getattr(result, "ic_by_horizon", None) or {}).get(0)
+        if ic is None or result.n_observations == 0:
+            print(f"  {key:<22} {'—':>9}   (no evaluable observations)")
+            continue
+        mean_str = f"{ic.mean:+.3f}" if ic.mean == ic.mean else "n/a"
+        std_str = f"{ic.std:.3f}" if ic.std == ic.std else "n/a"
+        t_str = f"{ic.t_stat:+.2f}" if ic.t_stat == ic.t_stat else "n/a"
+        hit_str = f"{ic.hit_rate:.0%}" if ic.hit_rate == ic.hit_rate else "n/a"
+        print(f"  {key:<22} {mean_str:>9} {std_str:>8} {t_str:>8} "
+              f"{hit_str:>9} {ic.n_dates:>6} {result.n_observations:>7}")
+
+    # Caveats are shared across signals — print once from the composite result
+    composite = results.get("composite")
+    if composite is not None and composite.caveats:
+        print()
+        for caveat in composite.caveats:
+            print(f"  ! {caveat}")
+    print()
+
+
 def print_backtest_report(result: Any) -> None:
     print("\n" + "=" * 90)
     print("  BACKTEST REPORT")
@@ -329,16 +359,33 @@ def print_backtest_report(result: Any) -> None:
           f"Observations: {result.n_observations}  |  "
           f"Cross-sectional dates: {result.n_dates}")
 
-    print(f"\n  {'Horizon':<12} {'Mean Spearman (score vs fwd return)':>38}")
-    print("  " + "-" * 52)
-    for horizon, corr in result.spearman_by_horizon.items():
-        label = f"{horizon} bars" if horizon else "since snapshot"
-        corr_str = f"{corr:+.3f}" if corr == corr else "n/a"
-        print(f"  {label:<12} {corr_str:>38}")
+    ic_by_horizon = getattr(result, "ic_by_horizon", None) or {}
+    benchmark = getattr(result, "benchmark", None)
+    return_label = f"excess vs {benchmark}" if benchmark else "raw"
+
+    if ic_by_horizon:
+        print(f"\n  {'Horizon':<14} {'IC mean':>9} {'± std':>8} {'t-stat':>8} "
+              f"{'hit-rate':>9} {'dates':>6}")
+        print("  " + "-" * 58)
+        for horizon, ic in ic_by_horizon.items():
+            label = f"{horizon} bars" if horizon else "since snapshot"
+            mean_str = f"{ic.mean:+.3f}" if ic.mean == ic.mean else "n/a"
+            std_str = f"{ic.std:.3f}" if ic.std == ic.std else "n/a"
+            t_str = f"{ic.t_stat:+.2f}" if ic.t_stat == ic.t_stat else "n/a"
+            hit_str = f"{ic.hit_rate:.0%}" if ic.hit_rate == ic.hit_rate else "n/a"
+            print(f"  {label:<14} {mean_str:>9} {std_str:>8} {t_str:>8} "
+                  f"{hit_str:>9} {ic.n_dates:>6}")
+    else:
+        print(f"\n  {'Horizon':<12} {'Mean Spearman (score vs fwd return)':>38}")
+        print("  " + "-" * 52)
+        for horizon, corr in result.spearman_by_horizon.items():
+            label = f"{horizon} bars" if horizon else "since snapshot"
+            corr_str = f"{corr:+.3f}" if corr == corr else "n/a"
+            print(f"  {label:<12} {corr_str:>38}")
 
     for horizon, means in result.bucket_means.items():
         label = f"{horizon}-bar" if horizon else "since-snapshot"
-        print(f"\n  Mean forward return by score quintile ({label}):")
+        print(f"\n  Mean forward return by score quintile ({label}, {return_label}):")
         print(f"  {'Quintile':<12} {'(low score)':<14}{'':<14}{'':<14}{'':<14}{'(high score)'}")
         cells = []
         for m in means:
