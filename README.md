@@ -28,6 +28,8 @@ python3 main.py analyze --top 20 --verbose     # Top 20 with detailed reasoning
 python3 main.py analyze --risk aggressive      # Growth-biased scoring
 python3 main.py analyze --budget 500           # Custom monthly budget
 python3 main.py analyze --no-portfolio         # Skip portfolio-aware features
+python3 main.py analyze --include-incomplete   # Keep low-data-quality stocks in ranking (marked '!')
+python3 main.py analyze --snapshot             # Record scores to snapshots/scores.jsonl for validation
 ```
 
 **Account-specific analysis** — scoped to a single account's holdings with swap suggestions:
@@ -48,6 +50,8 @@ python3 main.py analyze --account hsa          # Fidelity HSA
 | `--budget` | Monthly investment budget override |
 | `--no-portfolio` | Skip portfolio loading (no overlap penalty, sizing, or placement) |
 | `--account` | Analyze a specific account — shows holdings, swaps, and reallocation |
+| `--include-incomplete` | Keep stocks below the data-completeness threshold in the ranking (marked `!`) |
+| `--snapshot` | Append the full scored cross-section to `snapshots/scores.jsonl` |
 
 ### `sync` — Pull latest portfolio data
 
@@ -92,18 +96,9 @@ per-signal components) to `snapshots/scores.jsonl`; once snapshots are ≥21
 days old, `--eval-snapshots` measures whether the scores actually predicted
 returns — the survivorship-free validation path.
 
-**Weight retuning policy** — pillar weights change only on snapshot-IC
-evidence (≥3–5 evaluable snapshot dates from `--by-component`), never by
-feel:
-
-- Technical IC t-stat ≤ 0 across horizons → cut `WEIGHT_TECHNICAL` to ~0.25,
-  redistribute to fundamental
-- Sentiment IC ≈ 0 → cut `WEIGHT_SENTIMENT` to ~0.10
-- Momentum component IC ≥ 0.05 while other technical components stay ≤ 0 →
-  raise momentum's share inside `analysis/technical.py:_WEIGHTS` (or promote
-  it to its own pillar)
-- Re-check the 80/65/45 recommendation cutoffs against fresh snapshot
-  cross-sections after any scoring change
+**Weight retuning is evidence-gated**: pillar weights and score bands change
+only on snapshot-IC evidence, never by feel. The full process and decision
+rules live in [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
 ## How It Works
 
@@ -168,6 +163,25 @@ When `portfolio.json` is present:
 - **Position sizing** — Monthly budget split by conviction × inverse-volatility (calmer names get more at equal score; scalar clamped to 0.5–2.0), with no position above 35% of the monthly budget
 - **Account placement** — Suggests Roth IRA (high-growth) or Brokerage (dividends, shorter-term) per stock
 
+### Portfolio file (`portfolio.json`)
+
+```json
+{
+  "schwab_brokerage": {"holdings": [{"ticker": "AAPL", "name": "Apple Inc", "shares": 10, "market_value": 2100.00}]},
+  "schwab_roth_ira": {"holdings": []},
+  "fidelity": {"401k": {"holdings": []}, "hsa": {"holdings": []}, "roth_401k": {"holdings": []}},
+  "roth_ira_maxed": true,
+  "emergency_fund": ["SGOV"],
+  "monthly_expenses": {"personal_investment": 500.00},
+  "last_sync": "2026-05-02T12:00:00+00:00"
+}
+```
+
+- `roth_ira_maxed` — Roth account analysis becomes reallocation-only (no new position sizing; swaps are the actionable output; account placement routes to Brokerage)
+- `emergency_fund` — tickers excluded from swap suggestions and sector allocation, labeled `[emergency fund]` instead of being flagged as weak
+- `monthly_expenses.personal_investment` — default monthly budget for position sizing (override with `--budget`)
+- `last_sync` — ISO timestamp of the most recent `sync`
+
 ### Account Analysis & Swap Suggestions
 
 `--account` runs a scoped analysis for one account:
@@ -194,20 +208,32 @@ All settings via `.env`:
 | `SENTIMENT_BACKEND` | `lexicon` | `lexicon` or `finbert` (falls back to lexicon if unavailable) |
 | `MIN_PRICE` | `5.0` | Minimum stock price filter |
 | `MIN_MARKET_CAP` | `300000000` | Minimum market cap ($300M) |
+| `MIN_DATA_COMPLETENESS` | `0.5` | Below this weighted completeness fraction, a stock is excluded as "Insufficient Data" |
 | `SCHWAB_CLIENT_ID` | — | Schwab API client ID |
 | `SCHWAB_CLIENT_SECRET` | — | Schwab API client secret |
 | `SCHWAB_REFRESH_TOKEN` | — | Set automatically by `link` |
 | `PLAID_CLIENT_ID` | — | Plaid API client ID |
 | `PLAID_SECRET` | — | Plaid API secret |
 | `PLAID_ENV` | `sandbox` | Plaid environment |
+| `PLAID_ACCESS_TOKEN_CHASE` | — | Set automatically by `link --institution chase` |
+| `PLAID_ACCESS_TOKEN_FIDELITY` | — | Unused — Fidelity is not available via Plaid |
+| `YF_SETUP_URL` | — | Override Yahoo cookie-bootstrap URL if the default is blocked |
 
-Weights are auto-normalized if they don't sum to 1.0.
+Weights are auto-normalized if they don't sum to 1.0; if all three are zero they reset to the defaults (0.45/0.45/0.10).
 
 ## Data Sources
 
 - **yahooquery** (no API key) — Price history, fundamentals, current quotes, company profile, ETF fund data
 - **Finnhub** (free tier, 60 calls/min) — Company news, S&P 500 constituents
 - **Yahoo Finance RSS** (no API key) — Fallback news source when Finnhub is unavailable
+
+## Limitations
+
+- Historical backtesting covers the technical pillar only (fundamentals/sentiment aren't available as-of past dates) and is survivorship-biased; snapshot evaluation is the honest composite-validation path
+- No options or derivatives data; no real-time streaming — batch analysis only
+- Default sentiment is keyword-based; set `SENTIMENT_BACKEND=finbert` for model-based accuracy
+- Fidelity accounts require manual CSV import (not supported by Plaid)
+- 401(k) accounts are not selectable for `--account` analysis (employer-managed)
 
 ## Testing
 
