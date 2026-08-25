@@ -10,6 +10,10 @@ from schwab import SchwabAuth, SchwabClient
 CALLBACK_URL = "https://127.0.0.1:5000/callback"
 
 
+class SchwabAuthError(Exception):
+    """Raised when Schwab OAuth token refresh/exchange fails."""
+
+
 def _parse_positions(positions_dict: dict[str, Any]) -> list[dict[str, Any]]:
     holdings = []
     for symbol, pos in positions_dict.items():
@@ -55,7 +59,7 @@ def sync(client_id: str, client_secret: str, refresh_token: str) -> dict[str, An
         client = create_client(client_id, client_secret, refresh_token)
     except Exception as exc:
         logger.error("Schwab auth failed: %s", exc)
-        return {}
+        raise SchwabAuthError(str(exc)) from exc
 
     result: dict[str, Any] = {}
 

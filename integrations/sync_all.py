@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from integrations import plaid_sync, schwab
+from integrations.schwab import SchwabAuthError
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +40,20 @@ def sync_portfolio(
 ) -> dict[str, Any]:
     portfolio = _read_portfolio()
     synced_any = False
+    errors: dict[str, str] = {}
 
     if schwab_client_id and schwab_client_secret and schwab_refresh_token:
         logger.info("Syncing Schwab accounts...")
-        schwab_data = schwab.sync(schwab_client_id, schwab_client_secret, schwab_refresh_token)
-        if schwab_data:
-            for key in [k for k in portfolio if k.startswith("schwab_")]:
-                del portfolio[key]
-            portfolio.update(schwab_data)
-            synced_any = True
+        try:
+            schwab_data = schwab.sync(schwab_client_id, schwab_client_secret, schwab_refresh_token)
+        except SchwabAuthError as exc:
+            errors["schwab"] = str(exc)
+        else:
+            if schwab_data:
+                for key in [k for k in portfolio if k.startswith("schwab_")]:
+                    del portfolio[key]
+                portfolio.update(schwab_data)
+                synced_any = True
     else:
         logger.info("Schwab: skipped (no credentials)")
 
@@ -74,7 +80,10 @@ def sync_portfolio(
         portfolio["last_sync"] = datetime.now(timezone.utc).isoformat()
         _write_portfolio(portfolio)
         logger.info("Portfolio written to %s", PORTFOLIO_PATH)
-    else:
+    elif not errors:
         logger.warning("No accounts synced. Add credentials to .env and link institutions first.")
+
+    if errors:
+        portfolio = {**portfolio, "_sync_errors": errors}
 
     return portfolio

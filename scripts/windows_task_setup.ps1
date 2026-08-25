@@ -4,8 +4,10 @@ $wslArgs = '-d Ubuntu-22.04 -u ethnwang -- flock -n /tmp/stockbot-routine.lock -
 
 $action = New-ScheduledTaskAction -Execute 'wsl.exe' -Argument $wslArgs
 
-# Daily at 12:30, plus at logon — StartWhenAvailable catches missed slots
-# (machine asleep/off at 12:30 runs as soon as it's back).
+# Daily at 12:30, plus at logon — WakeToRun wakes a sleeping machine to hit
+# the 12:30 slot; StartWhenAvailable catches it late if the machine was fully
+# off. RestartCount/-Interval retries same-day if a run gets killed mid-way
+# (e.g. the machine going back to sleep).
 $triggerDaily = New-ScheduledTaskTrigger -Daily -At '12:30'
 $triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 
@@ -13,7 +15,10 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    -WakeToRun `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 10) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 
 Register-ScheduledTask `
     -TaskName 'StockBot Routine' `

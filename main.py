@@ -195,6 +195,12 @@ def _run_sync(config: Config, schwab_only: bool = False, plaid_only: bool = Fals
     if portfolio.get("last_sync"):
         logger.info("Last sync: %s", portfolio["last_sync"])
 
+    sync_errors = portfolio.get("_sync_errors")
+    if sync_errors:
+        for provider, message in sync_errors.items():
+            print(f"Error: {provider} sync failed: {message}", file=sys.stderr)
+        sys.exit(1)
+
 
 def _run_link_schwab(config: Config) -> None:
     if not config.schwab_client_id or not config.schwab_client_secret:
