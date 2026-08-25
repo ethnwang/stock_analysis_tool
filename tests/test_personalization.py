@@ -11,6 +11,7 @@ from data.models import ScoredStock
 from portfolio.loader import (
     compute_position_sizes,
     generate_swaps,
+    get_account_cash,
     get_account_holdings,
     get_all_holdings,
     get_held_tickers_detailed,
@@ -452,6 +453,16 @@ class TestAccountHoldings:
     def test_is_roth_maxed_when_set(self) -> None:
         p = {**SAMPLE_PORTFOLIO, "roth_ira_maxed": True}
         assert is_roth_maxed(p) is True
+
+    def test_get_account_cash_reads_schwab_cash_field(self) -> None:
+        p = {**SAMPLE_PORTFOLIO, "schwab_roth_ira": {**SAMPLE_PORTFOLIO["schwab_roth_ira"], "cash": 1477.90}}
+        assert get_account_cash(p, "schwab_roth_ira") == 1477.90
+
+    def test_get_account_cash_defaults_to_zero_when_absent(self) -> None:
+        assert get_account_cash(SAMPLE_PORTFOLIO, "schwab_roth_ira") == 0.0
+
+    def test_get_account_cash_zero_for_fidelity_accounts(self) -> None:
+        assert get_account_cash(SAMPLE_PORTFOLIO, "fidelity_hsa") == 0.0
 
 
 class TestSwapSuggestions:

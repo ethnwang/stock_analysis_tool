@@ -290,13 +290,19 @@ def print_account_report(
     if is_maxed:
         print(f"\n{'=' * 90}")
         print("  Roth IRA contributions are maxed for the year.")
-        print("  Consider the swap suggestions above to optimize existing holdings.")
+        if monthly_budget > 0:
+            print(f"  ${monthly_budget:,.2f} in idle cash is still available to deploy")
+            print("  (not a new contribution) — see position sizing below.")
+        else:
+            print("  Consider the swap suggestions above to optimize existing holdings.")
         print("=" * 90)
-    elif monthly_budget > 0:
+
+    if monthly_budget > 0:
         buyable_alts = [a for a in top_alts if a.suggested_amount > 0]
         if buyable_alts:
+            budget_label = "Idle cash" if is_maxed else "Monthly budget"
             print(f"\n{'=' * 90}")
-            print(f"  POSITION SIZING (Monthly budget: ${monthly_budget:,.2f})")
+            print(f"  POSITION SIZING ({budget_label}: ${monthly_budget:,.2f})")
             print("=" * 90)
             for stock in buyable_alts:
                 shares_str = f"~{stock.suggested_shares:.1f} shares"

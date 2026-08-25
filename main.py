@@ -18,6 +18,7 @@ from portfolio.loader import (
     _STANDARD_TICKER,
     compute_position_sizes,
     generate_swaps,
+    get_account_cash,
     get_account_holdings,
     get_all_holdings,
     get_emergency_fund_tickers,
@@ -352,12 +353,16 @@ def _run_account_analysis(args: argparse.Namespace, config: Config, portfolio: d
 
     swaps = generate_swaps(current_holdings, alternatives, emergency_fund_tickers=ef_tickers)
 
-    monthly_budget = 0.0
-    if not is_maxed:
+    if is_maxed:
+        # Contributions are capped, but idle cash already in the account isn't
+        # a new contribution — it should still get sized into a buy.
+        monthly_budget = args.budget or get_account_cash(portfolio, account_key)
+    else:
         monthly_budget = args.budget or get_monthly_budget(portfolio)
-        if monthly_budget > 0:
-            buyable = [a for a in alternatives if a.recommendation in ("Buy", "Strong Buy")]
-            compute_position_sizes(buyable, monthly_budget)
+
+    if monthly_budget > 0:
+        buyable = [a for a in alternatives if a.recommendation in ("Buy", "Strong Buy")]
+        compute_position_sizes(buyable, monthly_budget)
 
     elapsed = time.time() - start
     logger.info("Done in %.1fs", elapsed)

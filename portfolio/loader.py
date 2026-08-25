@@ -157,6 +157,17 @@ def is_roth_maxed(portfolio: dict[str, Any]) -> bool:
     return bool(portfolio.get("roth_ira_maxed", False))
 
 
+def get_account_cash(portfolio: dict[str, Any], account_key: str) -> float:
+    """Idle cash already sitting in the account — distinct from new contribution room.
+
+    Fidelity CSV imports don't capture a cash balance (money-market cash is
+    filtered out during parsing), so this only has data for Schwab accounts.
+    """
+    if account_key.startswith("fidelity_"):
+        return 0.0
+    return float(portfolio.get(account_key, {}).get("cash", 0.0))
+
+
 def get_emergency_fund_tickers(portfolio: dict[str, Any] | None) -> set[str]:
     if not portfolio:
         return set()
